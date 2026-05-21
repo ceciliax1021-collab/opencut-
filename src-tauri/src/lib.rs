@@ -3,22 +3,18 @@ mod migrate;
 mod models;
 mod storage;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WebviewWindow, WindowEvent,
+    Manager, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use commands::AppState;
 use storage::Storage;
-
-static SUPPRESS_BLUR_HIDE: AtomicBool = AtomicBool::new(false);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -41,9 +37,11 @@ pub fn run() {
             let clips_dir = data_dir.join("clips");
             migrate::migrate_legacy_data(&data_dir, &clips_dir);
 
+            let storage = Storage::new(clips_dir.clone());
+            let _ = storage.dedupe_existing_images();
+
             let state = Arc::new(AppState {
-                storage: Storage::new(clips_dir),
-                skip_clipboard_watch: AtomicBool::new(false),
+                storage,
                 last_clipboard_hash: Mutex::new(None),
             });
 
@@ -87,17 +85,11 @@ pub fn run() {
             commands::copy_image_to_clipboard,
             commands::copy_text_to_clipboard,
             commands::open_local_image,
+            commands::quit_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-            }
-        });
+        .run(|_app_handle, _event| {});
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -115,13 +107,23 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             .icon_as_template(true)
             .menu(&tray_menu)
             .show_menu_on_left_click(false)
-            .tooltip("OpenCut")
+            .tooltip("OpenCut（右键或 Control+点击 退出）")
             .on_menu_event(|app, event| match event.id.as_ref() {
                 "show" => show_main_window(app),
-                "quit" => app.exit(0),
+                "quit" => {
+                    app.exit(0);
+                }
                 _ => {}
             })
             .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Right,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    return;
+                }
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
@@ -140,10 +142,12 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             .icon(tray_icon)
             .menu(&tray_menu)
             .show_menu_on_left_click(false)
-            .tooltip("OpenCut")
+            .tooltip("OpenCut（右键或 Control+点击 退出）")
             .on_menu_event(|app, event| match event.id.as_ref() {
                 "show" => show_main_window(app),
-                "quit" => app.exit(0),
+                "quit" => {
+                    app.exit(0);
+                }
                 _ => {}
             })
             .on_tray_icon_event(|tray, event| {
@@ -177,11 +181,12 @@ fn global_shortcut() -> Shortcut {
 fn attach_window_behaviors(window: WebviewWindow) {
     let window_for_event = window.clone();
     window.on_window_event(move |event| {
-        if let WindowEvent::Focused(false) = event {
-            if SUPPRESS_BLUR_HIDE.load(Ordering::SeqCst) {
-                return;
+        match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let _ = window_for_event.hide();
             }
-            let _ = window_for_event.hide();
+            _ => {}
         }
     });
 }
@@ -198,18 +203,10 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        SUPPRESS_BLUR_HIDE.store(true, Ordering::SeqCst);
         position_panel(&window);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-
-        let window_clone = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(250));
-            SUPPRESS_BLUR_HIDE.store(false, Ordering::SeqCst);
-            let _ = window_clone.set_focus();
-        });
     }
 }
 

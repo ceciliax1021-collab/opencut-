@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 
 use crate::models::{Group, ImageMetadata, MetadataStore, TextClip, UploadedImage, ImagesResponse};
 
@@ -88,7 +89,7 @@ impl Storage {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || name == TEXTS_FILE || name == METADATA_FILE {
+            if !is_image_file(&name) {
                 continue;
             }
             valid_files.push(name);
@@ -159,8 +160,34 @@ impl Storage {
         bytes: &[u8],
         original_name: Option<&str>,
         group_id: Option<&str>,
-    ) -> Result<UploadedImage, String> {
-        let digest = format!("{:x}", md5::compute(bytes));
+    ) -> Result<(UploadedImage, bool), String> {
+        let digest = content_digest(bytes);
+        let target_group = group_id.unwrap_or("default");
+
+        if let Some(existing_id) = self.find_image_by_digest(&digest)? {
+            let mut store = self.read_metadata();
+            let display_name = original_name
+                .filter(|n| !n.is_empty() && *n != "blob")
+                .map(str::to_string);
+
+            if let Some(meta) = store.image_metadata.iter_mut().find(|m| m.id == existing_id) {
+                if let Some(name) = display_name {
+                    meta.name = name;
+                }
+                if group_id.is_some() {
+                    meta.group_id = target_group.into();
+                }
+            } else {
+                store.image_metadata.push(ImageMetadata {
+                    id: existing_id.clone(),
+                    name: display_name.unwrap_or_else(|| existing_id.clone()),
+                    group_id: target_group.into(),
+                });
+            }
+            self.write_metadata(&store)?;
+            return Ok((self.build_image_record(&existing_id, target_group)?, false));
+        }
+
         let ext = extension_from_bytes(bytes, original_name);
         let filename = format!("{digest}{ext}");
         let path = self.image_path(&filename);
@@ -169,7 +196,6 @@ impl Storage {
             fs::write(&path, bytes).map_err(|e| e.to_string())?;
         }
 
-        let target_group = group_id.unwrap_or("default");
         let mut store = self.read_metadata();
         let display_name = original_name
             .filter(|n| !n.is_empty() && *n != "blob")
@@ -177,6 +203,7 @@ impl Storage {
             .to_string();
 
         if let Some(meta) = store.image_metadata.iter_mut().find(|m| m.id == filename) {
+            meta.name = display_name.clone();
             if group_id.is_some() {
                 meta.group_id = target_group.into();
             }
@@ -189,6 +216,142 @@ impl Storage {
         }
         self.write_metadata(&store)?;
 
+        Ok((
+            self.build_image_record(&filename, target_group)?,
+            true,
+        ))
+    }
+
+    pub fn dedupe_existing_images(&self) -> Result<(), String> {
+        let entries = fs::read_dir(&self.root).map_err(|e| e.to_string())?;
+        let mut by_digest: HashMap<String, Vec<String>> = HashMap::new();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_image_file(&name) {
+                continue;
+            }
+
+            let digest = if let Some(existing) = md5_from_filename(&name) {
+                existing
+            } else if let Ok(bytes) = fs::read(&path) {
+                content_digest(&bytes)
+            } else {
+                continue;
+            };
+
+            by_digest.entry(digest).or_default().push(name);
+        }
+
+        let mut store = self.read_metadata();
+        let mut changed = false;
+
+        for (digest, files) in by_digest {
+            if files.len() <= 1 {
+                continue;
+            }
+
+            let keeper = pick_image_keeper(&files, |name| file_mtime(&self.image_path(name)));
+            let ext = Path::new(&keeper)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("png");
+            let canonical = format!("{digest}.{ext}");
+
+            let final_id = if keeper == canonical {
+                keeper.clone()
+            } else {
+                let from = self.image_path(&keeper);
+                let to = self.image_path(&canonical);
+                if !to.exists() {
+                    if fs::rename(&from, &to).is_err() {
+                        let _ = fs::copy(&from, &to);
+                        let _ = fs::remove_file(&from);
+                    }
+                } else {
+                    let _ = fs::remove_file(&from);
+                }
+
+                for meta in store.image_metadata.iter_mut() {
+                    if meta.id == keeper {
+                        meta.id = canonical.clone();
+                    }
+                }
+                changed = true;
+                canonical
+            };
+
+            for file in files {
+                if file == final_id {
+                    continue;
+                }
+                let path = self.image_path(&file);
+                if path.exists() {
+                    let _ = fs::remove_file(&path);
+                }
+                let before = store.image_metadata.len();
+                store.image_metadata.retain(|m| m.id != file);
+                if store.image_metadata.len() != before {
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            self.write_metadata(&store)?;
+        }
+
+        Ok(())
+    }
+
+    fn find_image_by_digest(&self, digest: &str) -> Result<Option<String>, String> {
+        let entries = fs::read_dir(&self.root).map_err(|e| e.to_string())?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_image_file(&name) {
+                continue;
+            }
+
+            if let Some(existing) = md5_from_filename(&name) {
+                if existing == digest {
+                    return Ok(Some(name));
+                }
+                continue;
+            }
+
+            if let Ok(bytes) = fs::read(&path) {
+                if content_digest(&bytes) == digest {
+                    return Ok(Some(name));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn build_image_record(&self, id: &str, group_id: &str) -> Result<UploadedImage, String> {
+        let store = self.read_metadata();
+        let path = self.image_path(id);
+        let meta = store
+            .image_metadata
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+            .unwrap_or(ImageMetadata {
+                id: id.into(),
+                name: id.into(),
+                group_id: group_id.into(),
+            });
+
         let created_at = fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
@@ -197,10 +360,10 @@ impl Storage {
             .unwrap_or(now_ms());
 
         Ok(UploadedImage {
-            id: filename,
+            id: id.into(),
             url: path.to_string_lossy().into_owned(),
-            name: display_name,
-            group_id: target_group.into(),
+            name: meta.name,
+            group_id: meta.group_id,
             created_at,
         })
     }
@@ -262,4 +425,44 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn content_digest(bytes: &[u8]) -> String {
+    format!("{:x}", md5::compute(bytes))
+}
+
+fn is_image_file(name: &str) -> bool {
+    !name.starts_with('.') && name != TEXTS_FILE && name != METADATA_FILE
+}
+
+fn md5_from_filename(name: &str) -> Option<String> {
+    let stem = Path::new(name).file_stem()?.to_str()?;
+    if stem.len() == 32 && stem.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(stem.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn file_mtime(path: &Path) -> u64 {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn pick_image_keeper<F>(files: &[String], mtime: F) -> String
+where
+    F: Fn(&str) -> u64,
+{
+    files
+        .iter()
+        .max_by_key(|name| {
+            let canonical = md5_from_filename(name).is_some();
+            (canonical, mtime(name))
+        })
+        .cloned()
+        .unwrap_or_else(|| files[0].clone())
 }

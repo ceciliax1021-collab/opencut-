@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Group, UploadedImage, TextClip } from './types';
 import { ImageCard } from './components/ImageCard';
 import { TextCard } from './components/TextCard';
@@ -23,6 +23,7 @@ import {
   openImagePath,
   onClipUpdated,
   resolveImageUrl,
+  quitApp,
 } from './lib/local';
 import { 
   Copy, 
@@ -52,8 +53,11 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, image: UploadedImage } | null>(null);
   const [toast, setToast] = useState<{ message: string, visible: boolean }>({ message: '', visible: false });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mainScrollRef = useRef<HTMLElement>(null);
+  const scrollRestoreRef = useRef<{ top: number; left: number } | null>(null);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [mainViewportScroll, setMainViewportScroll] = useState({ top: 0, left: 0 });
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -122,6 +126,45 @@ export default function App() {
       unlisten?.();
     };
   }, []);
+
+  const setSidebarCollapsed = useCallback((collapsed: boolean) => {
+    const el = mainScrollRef.current;
+    if (el) {
+      scrollRestoreRef.current = {
+        top: el.scrollTop,
+        left: el.scrollLeft,
+      };
+    }
+    setIsSidebarCollapsed(collapsed);
+  }, []);
+
+  useLayoutEffect(() => {
+    const target = scrollRestoreRef.current;
+    if (!target) return;
+
+    const el = mainScrollRef.current;
+    if (!el) {
+      scrollRestoreRef.current = null;
+      return;
+    }
+
+    const restore = () => {
+      el.scrollTop = target.top;
+      el.scrollLeft = target.left;
+      setMainViewportScroll({ top: target.top, left: target.left });
+    };
+
+    restore();
+    const raf = requestAnimationFrame(restore);
+    const timer = window.setTimeout(restore, 320);
+
+    scrollRestoreRef.current = null;
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+  }, [isSidebarCollapsed]);
 
   const saveTextClip = async (content: string) => {
     if (!content || !content.trim()) return;
@@ -718,6 +761,18 @@ export default function App() {
           copySelectedTexts();
         }
       }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'q') {
+        e.preventDefault();
+        quitApp();
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+        e.preventDefault();
+        Promise.all([loadImages(), loadTexts()]).then(() => {
+          showToast('已刷新');
+        });
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -833,7 +888,7 @@ export default function App() {
               <div className="h-11 px-4 border-b border-neutral-100/60 flex items-center justify-between bg-white/40">
                 <span className="text-xs font-bold tracking-wider text-neutral-700">截图分类</span>
                 <button 
-                  onClick={() => setIsSidebarCollapsed(true)}
+                  onClick={() => setSidebarCollapsed(true)}
                   className="text-neutral-400 hover:text-neutral-800 p-1 hover:bg-neutral-100/60 rounded-lg transition-all flex items-center justify-center"
                   title="收起分类"
                 >
@@ -1054,8 +1109,15 @@ export default function App() {
 
         {}
         <main 
+          ref={mainScrollRef}
+          onScroll={(e) => {
+            setMainViewportScroll({
+              top: e.currentTarget.scrollTop,
+              left: e.currentTarget.scrollLeft,
+            });
+          }}
           onMouseDown={handleMouseDown}
-          className="flex-1 relative p-6 overflow-hidden overflow-y-auto select-none bg-[#F7F7F7]"
+          className="flex-1 relative p-6 overflow-hidden overflow-y-auto select-none bg-[#F7F7F7] [overflow-anchor:auto]"
         >
           {}
           <div className="absolute top-4 right-6 z-45 select-text">
@@ -1108,12 +1170,16 @@ export default function App() {
           <AnimatePresence>
             {activeTab === 'image' && isSidebarCollapsed && (
               <motion.button
-                initial={{ x: -50, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                exit={{ x: -100, opacity: 0 }}
-                transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-                onClick={() => setIsSidebarCollapsed(false)}
-                className="absolute top-4 left-4 bg-white/80 backdrop-blur-md hover:bg-white p-2.5 rounded-xl shadow-lg border border-neutral-200/50 text-neutral-600 hover:text-[#191919] z-30 transition-all flex items-center gap-1.5 font-bold focus:outline-none select-none cursor-pointer text-xs"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                style={{
+                  top: mainViewportScroll.top + 16,
+                  left: mainViewportScroll.left + 16,
+                }}
+                onClick={() => setSidebarCollapsed(false)}
+                className="absolute bg-white/80 backdrop-blur-md hover:bg-white p-2.5 rounded-xl shadow-lg border border-neutral-200/50 text-neutral-600 hover:text-[#191919] z-30 transition-all flex items-center gap-1.5 font-bold focus:outline-none select-none cursor-pointer text-xs"
                 title="展开分类"
               >
                 <Folder className="w-3.5 h-3.5 text-neutral-500" />

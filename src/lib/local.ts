@@ -97,6 +97,10 @@ export async function openImagePath(path: string): Promise<void> {
   await invoke('open_local_image', { path });
 }
 
+export async function quitApp(): Promise<void> {
+  await invoke('quit_app');
+}
+
 export function onClipUpdated(callback: (kind: 'image' | 'text') => void): Promise<UnlistenFn> {
   return listen<string>('clip-updated', (event) => {
     if (event.payload === 'image' || event.payload === 'text') {

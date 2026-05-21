@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use arboard::{Clipboard, ImageData};
@@ -10,8 +9,12 @@ use crate::storage::Storage;
 
 pub struct AppState {
     pub storage: Storage,
-    pub skip_clipboard_watch: AtomicBool,
     pub last_clipboard_hash: Mutex<Option<u64>>,
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -31,6 +34,7 @@ pub fn upload_image(
         original_name.as_deref(),
         group_id.as_deref(),
     )
+    .map(|(image, _)| image)
 }
 
 #[tauri::command]
@@ -241,32 +245,31 @@ pub fn copy_image_to_clipboard(state: State<'_, Arc<AppState>>, id: String) -> R
 
 #[tauri::command]
 pub fn copy_text_to_clipboard(state: State<'_, Arc<AppState>>, content: String) -> Result<(), String> {
-    state.skip_clipboard_watch.store(true, Ordering::SeqCst);
-    let result = Clipboard::new()
+    remember_clipboard_hash(&state, hash_clipboard_text(&content));
+    Clipboard::new()
         .and_then(|mut cb| cb.set_text(content))
-        .map_err(|e| e.to_string());
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    state.skip_clipboard_watch.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 pub fn write_image_bytes_to_clipboard(state: &AppState, bytes: &[u8]) -> Result<(), String> {
-    state.skip_clipboard_watch.store(true, Ordering::SeqCst);
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
-    let result = Clipboard::new()
+    let width = width as usize;
+    let height = height as usize;
+    let raw_bytes = rgba.into_raw();
+
+    remember_clipboard_hash(state, hash_clipboard_image(width, height, &raw_bytes));
+
+    Clipboard::new()
         .and_then(|mut cb| {
             cb.set_image(ImageData {
-                width: width as usize,
-                height: height as usize,
-                bytes: rgba.into_raw().into(),
+                width,
+                height,
+                bytes: raw_bytes.into(),
             })
         })
-        .map_err(|e| e.to_string());
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    state.skip_clipboard_watch.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -288,10 +291,6 @@ pub fn start_clipboard_watcher(app: AppHandle, state: Arc<AppState>) {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
 
-            if state.skip_clipboard_watch.load(Ordering::SeqCst) {
-                continue;
-            }
-
             let hash = match read_clipboard_hash(&mut clipboard) {
                 Some(h) => h,
                 None => continue,
@@ -307,9 +306,10 @@ pub fn start_clipboard_watcher(app: AppHandle, state: Arc<AppState>) {
 
             if let Some(bytes) = read_clipboard_image(&mut clipboard) {
                 match state.storage.save_image(&bytes, None, None) {
-                    Ok(_) => {
+                    Ok((_, is_new)) if is_new => {
                         let _ = app.emit("clip-updated", "image");
                     }
+                    Ok(_) => {}
                     Err(_) => {}
                 }
                 continue;
@@ -317,6 +317,14 @@ pub fn start_clipboard_watcher(app: AppHandle, state: Arc<AppState>) {
 
             if let Some(text) = read_clipboard_text(&mut clipboard) {
                 if text.trim().is_empty() {
+                    continue;
+                }
+                if state
+                    .storage
+                    .read_texts()
+                    .iter()
+                    .any(|t| t.content == text)
+                {
                     continue;
                 }
                 match save_text_internal(&state, text) {
@@ -358,22 +366,41 @@ fn save_text_internal(state: &AppState, content: String) -> Result<TextClip, Str
 }
 
 fn read_clipboard_hash(clipboard: &mut Clipboard) -> Option<u64> {
+    if let Ok(image) = clipboard.get_image() {
+        return Some(hash_clipboard_image(
+            image.width,
+            image.height,
+            &image.bytes,
+        ));
+    }
+    if let Ok(text) = clipboard.get_text() {
+        return Some(hash_clipboard_text(&text));
+    }
+    None
+}
+
+fn remember_clipboard_hash(state: &AppState, hash: u64) {
+    *state.last_clipboard_hash.lock() = Some(hash);
+}
+
+fn hash_clipboard_image(width: usize, height: usize, bytes: &[u8]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    if let Ok(image) = clipboard.get_image() {
-        let mut hasher = DefaultHasher::new();
-        image.bytes.hash(&mut hasher);
-        image.width.hash(&mut hasher);
-        image.height.hash(&mut hasher);
-        return Some(hasher.finish());
-    }
-    if let Ok(text) = clipboard.get_text() {
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        return Some(hasher.finish());
-    }
-    None
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    width.hash(&mut hasher);
+    height.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash_clipboard_text(text: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn read_clipboard_image(clipboard: &mut Clipboard) -> Option<Vec<u8>> {

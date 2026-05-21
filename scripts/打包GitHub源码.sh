@@ -6,7 +6,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/release/OpenCut-源码-上传GitHub.zip"
 cd "$ROOT"
 
-echo "正在打包源码..."
+if [ ! -f ".github/workflows/build.yml" ]; then
+  echo "❌ 缺少 .github/workflows/build.yml，GitHub Actions 无法运行 Build OpenCut"
+  exit 1
+fi
+
+echo "正在打包源码（含 .github 隐藏文件夹）..."
 zip -r -q "$OUT" . \
   -x "node_modules/*" \
   -x "src-tauri/target/*" \
@@ -22,9 +27,12 @@ zip -r -q "$OUT" . \
 echo "✅ 源码包已生成:"
 echo "   $OUT"
 echo ""
+echo "⚠️  上传前请确认 zip 解压后能看到 .github/workflows/build.yml"
+echo "   Mac 解压后按 Cmd+Shift+. 显示隐藏文件夹"
+echo ""
 echo "下一步："
-echo "1. 打开 https://github.com/new 创建仓库 opencut"
-echo "2. 点 uploading an existing file"
-echo "3. 解压此 zip，把里面的文件全部拖进 GitHub 上传"
+echo "1. 打开 https://github.com/new 创建 Public 仓库 opencut"
+echo "2. 解压此 zip，把里面所有文件（含 .github）拖进 GitHub 上传"
+echo "3. Code 页确认有 .github/workflows/build.yml"
 echo "4. Actions → Build OpenCut → Run workflow"
 echo "5. 下载 OpenCut-Windows 安装包"
