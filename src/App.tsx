@@ -1,0 +1,1644 @@
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { Group, UploadedImage, TextClip } from './types';
+import { ImageCard } from './components/ImageCard';
+import { TextCard } from './components/TextCard';
+import { ContextMenu } from './components/ContextMenu';
+import {
+  getImages,
+  getTexts,
+  saveText as storeText,
+  togglePinText,
+  deleteText as removeText,
+  clearUnpinnedTexts as clearTexts,
+  uploadImage,
+  deleteImage as removeImage,
+  renameImage,
+  moveImages,
+  createGroup,
+  renameGroup,
+  deleteGroup,
+  updateText,
+  copyImageToClipboard,
+  copyTextToClipboard as writeTextToClipboard,
+  openImagePath,
+  onClipUpdated,
+  resolveImageUrl,
+} from './lib/local';
+import { 
+  Copy, 
+  Trash2, 
+  DownloadCloud, 
+  Image as ImageIcon, 
+  Upload, 
+  Pin, 
+  Clipboard, 
+  Sparkles, 
+  Folder, 
+  Plus, 
+  Edit2, 
+  ChevronDown,
+  Settings,
+  ChevronLeft,
+  Search
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+
+export default function App() {
+  const [images, setImages] = useState<UploadedImage[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, image: UploadedImage } | null>(null);
+  const [toast, setToast] = useState<{ message: string, visible: boolean }>({ message: '', visible: false });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [activeGroupMenuId, setActiveGroupMenuId] = useState<string | null>(null);
+  const [isBatchMoveMenuOpen, setIsBatchMoveMenuOpen] = useState(false);
+
+  const [activeTab, setActiveTab] = useState<'image' | 'text'>('image');
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+
+  const [texts, setTexts] = useState<TextClip[]>([]);
+  const [newTextContent, setNewTextContent] = useState('');
+  const [selectedTextIds, setSelectedTextIds] = useState<Set<string>>(new Set());
+  const [isTextSelectMode, setIsTextSelectMode] = useState(false);
+  const [editingText, setEditingText] = useState<TextClip | null>(null);
+  const [editingTextContent, setEditingTextContent] = useState('');
+  const [textContextMenu, setTextContextMenu] = useState<{ x: number, y: number, text: TextClip } | null>(null);
+
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
+
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showToast = (message: string) => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setToast({ message, visible: true });
+
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast({ message: '', visible: false });
+    }, 1000);
+  };
+
+  const loadImages = async () => {
+    try {
+      const data = await getImages();
+      setGroups(data.groups || []);
+      setImages(data.images || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const loadTexts = async () => {
+    try {
+      const data = await getTexts();
+      setTexts(data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    loadImages();
+    loadTexts();
+
+    let unlisten: (() => void) | undefined;
+    onClipUpdated((kind) => {
+      if (kind === 'image') loadImages();
+      else loadTexts();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const saveTextClip = async (content: string) => {
+    if (!content || !content.trim()) return;
+    try {
+      const newClip = await storeText(content);
+      setTexts(prev => {
+        const filtered = prev.filter(t => t.content !== content);
+        return [newClip, ...filtered];
+      });
+      showToast('文本已保存');
+    } catch (e) {
+      console.error(e);
+      showToast('文本保存失败');
+    }
+  };
+
+  const handleTogglePinText = async (text: TextClip) => {
+    try {
+      const updated = await togglePinText(text.id);
+      setTexts(prev => {
+        const mapped = prev.map(t => t.id === text.id ? updated : t);
+        const pinned = mapped.filter(t => t.isPinned);
+        const unpinned = mapped.filter(t => !t.isPinned);
+        return [...pinned, ...unpinned];
+      });
+    } catch (e) {
+      console.error(e);
+      showToast('系统操作失败');
+    }
+  };
+
+  const deleteText = async (id: string) => {
+    try {
+      await removeText(id);
+      setTexts(prev => prev.filter(t => t.id !== id));
+      setSelectedTextIds(prev => {
+        const updated = new Set(prev);
+        updated.delete(id);
+        return updated;
+      });
+      showToast('文本已删除');
+    } catch (e) {
+      console.error(e);
+      showToast('删除失败');
+    }
+  };
+
+  const clearUnpinnedTexts = async () => {
+    try {
+      await clearTexts();
+      setTexts(prev => prev.filter(t => t.isPinned));
+      setSelectedTextIds(new Set());
+      showToast('已清空未置顶的文本记录');
+    } catch (e) {
+      console.error(e);
+      showToast('清空失败');
+    }
+  };
+
+  const uploadFiles = async (fileArray: FileList | File[]) => {
+    const files = Array.from(fileArray).filter(f => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    showToast('图片上传中...');
+    
+    const newImages: UploadedImage[] = [];
+    for (const file of files) {
+      try {
+        const uploadedImg = await uploadImage(
+          file,
+          selectedGroupId && selectedGroupId !== 'all' ? selectedGroupId : undefined,
+        );
+        newImages.push(uploadedImg);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    if (newImages.length === 0) {
+      showToast('图片上传失败');
+      return;
+    }
+
+    setImages(prev => {
+      const updated = [...prev];
+      let added = 0;
+      let dupes = 0;
+
+      for (const img of newImages) {
+        const idx = updated.findIndex(existing => existing.id === img.id);
+        if (idx !== -1) {
+          dupes++;
+          const [existing] = updated.splice(idx, 1);
+          existing.createdAt = Date.now();
+
+          if (selectedGroupId && selectedGroupId !== 'all') {
+            existing.groupId = selectedGroupId;
+          }
+          updated.unshift(existing);
+        } else {
+          added++;
+          updated.unshift({ ...img, createdAt: Date.now() });
+        }
+      }
+
+      setTimeout(() => {
+        if (added === 0 && dupes > 0) {
+          showToast(`已将 ${dupes} 张重复图片置顶`);
+        } else if (added > 0 && dupes > 0) {
+          showToast(`成功保存 ${added} 张新图，${dupes} 张重复图片已置顶`);
+        } else {
+          showToast(files.length > 1 ? `成功导入 ${added} 张图片` : '图片成功保存到剪贴板');
+        }
+      }, 0);
+
+      return updated;
+    });
+    
+    const lastId = newImages[newImages.length - 1]?.id;
+    if (lastId) setSelectedIds(new Set([lastId]));
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      uploadFiles(e.target.files);
+    }
+    e.target.value = '';
+  };
+
+  const handlePaste = useCallback((e: ClipboardEvent) => {
+    const target = e.target;
+    const isInInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
+      }
+    }
+
+    if (files.length > 0) {
+      uploadFiles(files);
+      setActiveTab('image');
+      return;
+    }
+
+    if (isInInput) {
+      return;
+    }
+
+    const textData = e.clipboardData.getData('text');
+    if (textData && textData.trim()) {
+      e.preventDefault();
+      saveTextClip(textData);
+      setActiveTab('text');
+    }
+  }, [selectedGroupId]);
+
+  useEffect(() => {
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [handlePaste]);
+
+  const deleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    
+    const idsToDelete: string[] = Array.from(selectedIds);
+    setImages(prev => prev.filter(img => !selectedIds.has(img.id)));
+    setSelectedIds(new Set());
+    
+    for (const id of idsToDelete) {
+      removeImage(id).catch(console.error);
+    }
+    showToast(`已删除 ${idsToDelete.length} 张图片。`);
+  };
+
+  const deleteSelectedTexts = async () => {
+    if (selectedTextIds.size === 0) return;
+    const idsToDelete: string[] = Array.from(selectedTextIds);
+    setTexts(prev => prev.filter(t => !selectedTextIds.has(t.id)));
+    setSelectedTextIds(new Set());
+    
+    for (const id of idsToDelete) {
+      removeText(id).catch(console.error);
+    }
+    showToast(`已删除 ${idsToDelete.length} 条文本`);
+  };
+
+  const copyToClipboard = async (image: UploadedImage) => {
+    setCopiedId(image.id);
+    showToast('图片已复制到剪贴板');
+    setTimeout(() => setCopiedId(null), 850);
+
+    try {
+      await copyImageToClipboard(image.id);
+    } catch (err) {
+      console.error('clipboard write failed', err);
+    }
+  };
+
+  const copyTextToClipboard = async (textClip: TextClip) => {
+    setCopiedTextId(textClip.id);
+    showToast('文本已复制到剪贴板');
+    setTimeout(() => setCopiedTextId(null), 850);
+
+    try {
+      await writeTextToClipboard(textClip.content);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const copySelectedTexts = async () => {
+    if (selectedTextIds.size === 0) return;
+    const items = texts.filter(t => selectedTextIds.has(t.id));
+    if (items.length === 0) return;
+    
+    const mergedText = items.map(t => t.content).join('\n---\n');
+    try {
+      await writeTextToClipboard(mergedText);
+      showToast(`已合并复制选中的 ${items.length} 条文本`);
+    } catch (err) {
+      console.error(err);
+      showToast('合并复制失败');
+    }
+  };
+
+  const copyMultiple = async () => {
+    if (selectedIds.size === 0) return;
+    if (selectedIds.size === 1) {
+      const img = images.find(i => selectedIds.has(i.id));
+      if (img) copyToClipboard(img);
+      return;
+    }
+    
+    const firstId = Array.from(selectedIds)[0];
+    const img = images.find(i => i.id === firstId);
+    if (img) {
+      await copyToClipboard(img);
+      showToast('已为您合并复制首张选中图片');
+    }
+  };
+
+  const handleToggleSelect = (image: UploadedImage) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(image.id)) newSet.delete(image.id);
+    else newSet.add(image.id);
+    setSelectedIds(newSet);
+  };
+
+  const handleToggleSelectText = (text: TextClip) => {
+    const newSet = new Set(selectedTextIds);
+    if (newSet.has(text.id)) newSet.delete(text.id);
+    else newSet.add(text.id);
+    setSelectedTextIds(newSet);
+  };
+
+  const handleImageClick = (e: React.MouseEvent, image: UploadedImage) => {
+
+    const target = e.target as HTMLElement;
+    if (target.closest('select, input, button')) return;
+    
+
+    copyToClipboard(image);
+  };
+
+  const handleTextClick = (e: React.MouseEvent, text: TextClip) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button, select, input, svg')) return;
+
+    copyTextToClipboard(text);
+  };
+
+  const handleTextContextMenu = (e: React.MouseEvent, text: TextClip) => {
+    e.preventDefault();
+    setTextContextMenu({ x: e.clientX, y: e.clientY, text });
+  };
+
+  const handleSaveEditText = async () => {
+    if (!editingText || !editingTextContent.trim()) return;
+    try {
+      const updated = await updateText(editingText.id, editingTextContent);
+      setTexts(prev => prev.map(t => t.id === editingText.id ? updated : t));
+      setEditingText(null);
+      showToast('文本剪贴修改成功');
+    } catch (err) {
+      console.error(err);
+      showToast('保存修改失败');
+    }
+  };
+
+  const exportTextAsFile = (text: TextClip, format: 'txt' | 'md' | 'html' | 'docx') => {
+    let content = '';
+    let mimeType = '';
+    let fileExtension = '';
+    const dateStr = new Date(text.createdAt).toLocaleDateString().replace(/\//g, '-');
+    const fileName = `clip-${text.id.substring(0, 6)}-${dateStr}`;
+
+    switch (format) {
+      case 'txt':
+        content = text.content;
+        mimeType = 'text/plain;charset=utf-8';
+        fileExtension = 'txt';
+        break;
+      case 'md':
+        content = `# Text Clip (Copied on ${new Date(text.createdAt).toLocaleString()})\n\n${text.content}`;
+        mimeType = 'text/markdown;charset=utf-8';
+        fileExtension = 'md';
+        break;
+      case 'html':
+        content = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Clipping Details</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 40px; color: #1a1a1a; max-width: 650px; margin: 0 auto; line-height: 1.6; }
+    .meta { font-size: 12px; color: #888; border-bottom: 1px solid #eee; padding-bottom: 12px; margin-bottom: 24px; font-family: monospace; }
+    .content { white-space: pre-wrap; font-size: 15px; background: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px solid #eaeaea; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="meta">Saved at: ${new Date(text.createdAt).toLocaleString()}</div>
+  <div class="content">${text.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+</body>
+</html>`;
+        mimeType = 'text/html;charset=utf-8';
+        fileExtension = 'html';
+        break;
+      case 'docx':
+        content = `<!--[if gte mso 9]>
+<xml>
+  <w:WordDocument>
+    <w:View>Print</w:View>
+    <w:Zoom>100</w:Zoom>
+  </w:WordDocument>
+</xml>
+<![endif]-->
+<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word'>
+<head>
+  <title>Exported Doc</title>
+  <style>
+    p { font-family: "Calibri", "Arial", sans-serif; font-size: 11pt; line-height: 1.15; margin: 0 0 10pt; }
+    .meta { font-size: 9pt; color: #7f7f7f; margin-bottom: 12pt; }
+  </style>
+</head>
+<body>
+  <div class="meta">Saved at: ${new Date(text.createdAt).toLocaleString()}</div>
+  <div>${text.content.split('\n').map(line => `<p>${line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`).join('')}</div>
+</body>
+</html>`;
+        mimeType = 'application/msword;charset=utf-8';
+        fileExtension = 'docx';
+        break;
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${fileName}.${fileExtension}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast(`成功导出为 ${format.toUpperCase()} 文件`);
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, image: UploadedImage) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, image });
+  };
+
+  const toggleSelectAll = () => {
+    const visibleIds = filteredImages.map(img => img.id);
+    const allSelected = visibleIds.every(id => selectedIds.has(id));
+    
+    const newSet = new Set(selectedIds);
+    if (allSelected) {
+
+      visibleIds.forEach(id => newSet.delete(id));
+    } else {
+
+      visibleIds.forEach(id => newSet.add(id));
+    }
+    setSelectedIds(newSet);
+  };
+
+  const handleCreateGroup = async (name: string) => {
+    if (!name.trim()) return;
+    try {
+      const newGroup = await createGroup(name.trim());
+      setGroups(prev => [...prev, newGroup]);
+      setSelectedGroupId(newGroup.id);
+      showToast(`已创建“${newGroup.name}”分类`);
+    } catch (e) {
+      console.error(e);
+      showToast('新增分类失败');
+    }
+  };
+
+  const handleRenameGroup = async (id: string, name: string) => {
+    if (!name.trim()) return;
+    try {
+      const updated = await renameGroup(id, name.trim());
+      setGroups(prev => prev.map(g => g.id === id ? updated : g));
+      setEditingGroupId(null);
+      showToast('分类名称修改成功');
+    } catch (e) {
+      console.error(e);
+      showToast('分类修改失败');
+    }
+  };
+
+  const handleDeleteGroup = async (id: string) => {
+    try {
+      await deleteGroup(id);
+      setGroups(prev => prev.filter(g => g.id !== id));
+      setImages(prev => prev.map(img => img.groupId === id ? { ...img, groupId: 'default' } : img));
+      if (selectedGroupId === id) {
+        setSelectedGroupId('all');
+      }
+      showToast('分类已收回，组内图片已安全挪回默认分类');
+    } catch (e) {
+      console.error(e);
+      showToast('删除分类失败');
+    }
+  };
+
+  const handleRenameImage = async (id: string, newName: string) => {
+    try {
+      await renameImage(id, newName);
+      setImages(prev => prev.map(img => img.id === id ? { ...img, name: newName } : img));
+      showToast('修改名称成功');
+    } catch (e) {
+      console.error(e);
+      showToast('重命名失败');
+    }
+  };
+
+  const handleMoveImage = async (id: string, targetGroupId: string) => {
+    try {
+      await moveImages([id], targetGroupId);
+      setImages(prev => prev.map(img => img.id === id ? { ...img, groupId: targetGroupId } : img));
+      showToast('移动分类成功');
+    } catch (e) {
+      console.error(e);
+      showToast('移动分类失败');
+    }
+  };
+
+  const handleMoveMultipleImages = async (targetGroupId: string) => {
+    if (selectedIds.size === 0) return;
+    const ids: string[] = Array.from(selectedIds);
+    try {
+      await moveImages(ids, targetGroupId);
+      setImages(prev => prev.map(img => ids.includes(img.id) ? { ...img, groupId: targetGroupId } : img));
+      setSelectedIds(new Set());
+      const destGroup = groups.find(g => g.id === targetGroupId) || { name: '默认分类' };
+      showToast(`成功将 ${ids.length} 张图片移动至“${destGroup.name}”`);
+    } catch (e) {
+      console.error(e);
+      showToast('批量移动失败');
+    }
+  };
+
+  const [dragStart, setDragStart] = useState<{ x: number, y: number } | null>(null);
+  const [dragEnd, setDragEnd] = useState<{ x: number, y: number } | null>(null);
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, textarea, select, .context-menu, [role="button"]')) {
+      return;
+    }
+    if (target.closest('.image-card-item') || target.closest('.text-card-item')) {
+      return;
+    }
+
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      if (activeTab === 'image') {
+        setSelectedIds(new Set());
+      } else {
+        setSelectedTextIds(new Set());
+      }
+    }
+
+    setDragStart({ x: e.clientX, y: e.clientY });
+    setDragEnd({ x: e.clientX, y: e.clientY });
+  };
+
+  useEffect(() => {
+    if (!dragStart) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      setDragEnd({ x: e.clientX, y: e.clientY });
+
+      const x1 = Math.min(dragStart.x, e.clientX);
+      const y1 = Math.min(dragStart.y, e.clientY);
+      const x2 = Math.max(dragStart.x, e.clientX);
+      const y2 = Math.max(dragStart.y, e.clientY);
+
+      const selector = activeTab === 'image' ? '.image-card-item' : '.text-card-item';
+      const items = document.querySelectorAll(selector);
+      const newlySelected = new Set<string>();
+
+      items.forEach(item => {
+        const rect = item.getBoundingClientRect();
+        const intersects = !(
+          rect.right < x1 ||
+          rect.left > x2 ||
+          rect.bottom < y1 ||
+          rect.top > y2
+        );
+
+        if (intersects) {
+          const id = item.getAttribute('data-id');
+          if (id) {
+            newlySelected.add(id);
+          }
+        }
+      });
+
+      if (activeTab === 'image') {
+        setSelectedIds(newlySelected);
+      } else {
+        setSelectedTextIds(newlySelected);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDragStart(null);
+      setDragEnd(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragStart, activeTab]);
+
+  const filteredImages = images.filter(img => {
+    const matchesSearch = img.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesGroup = selectedGroupId === 'all' || img.groupId === selectedGroupId;
+    return matchesSearch && matchesGroup;
+  });
+
+  const visibleImages = useMemo(
+    () =>
+      filteredImages.map((img) => ({
+        ...img,
+        url: resolveImageUrl(img.url),
+      })),
+    [filteredImages],
+  );
+
+  const filteredTexts = texts.filter(t => t.content.toLowerCase().includes(searchQuery.toLowerCase()));
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        if (activeTab === 'image' && selectedIds.size > 0) {
+          setContextMenu(null);
+          deleteSelected();
+        } else if (activeTab === 'text' && selectedTextIds.size > 0) {
+          deleteSelectedTexts();
+        }
+      }
+      
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        if (activeTab === 'image') {
+
+          const visibleIds = filteredImages.map(img => img.id);
+          setSelectedIds(new Set(visibleIds));
+        } else if (activeTab === 'text') {
+          setSelectedTextIds(new Set(texts.map(t => t.id)));
+        }
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+        if (activeTab === 'image' && selectedIds.size > 0) {
+          e.preventDefault();
+          copyMultiple();
+        } else if (activeTab === 'text' && selectedTextIds.size > 0) {
+          e.preventDefault();
+          copySelectedTexts();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedIds, selectedTextIds, images, texts, activeTab, selectedGroupId, copyMultiple, copySelectedTexts, filteredImages]);
+
+  return (
+    <div className="h-screen w-full bg-[#F2F2F2] text-[#1A1A1A] font-sans flex flex-col overflow-hidden">
+      {}
+      <header className="h-16 bg-white border-b border-neutral-100 px-6 grid grid-cols-3 items-center z-25 shrink-0 select-none shadow-[0_2px_12px_rgba(0,0,0,0.02)]">
+        {}
+        <div className="flex items-center gap-3.5 justify-start">
+          <div className="font-sans text-base font-black tracking-tight text-neutral-900">OpenCut</div>
+          <div className="h-4 w-px bg-neutral-200"></div>
+          <div className="text-[11px] font-sans font-medium text-neutral-500 bg-neutral-100 px-2.5 py-1 rounded-full flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+            <span>{activeTab === 'image' ? `图片 ${filteredImages.length} 张` : `文本 ${texts.length} 条`}</span>
+          </div>
+        </div>
+
+        {}
+        <div className="flex items-center justify-center gap-3.5 select-none font-sans">
+          <button 
+            id="tab-button-image"
+            onClick={() => {
+              setActiveTab('image');
+              setSearchQuery('');
+              setIsSearchExpanded(false);
+            }}
+            className={`transition-all duration-200 cursor-pointer ${
+              activeTab === 'image' 
+                ? 'text-neutral-900 font-extrabold text-[15px]' 
+                : 'text-neutral-400 hover:text-neutral-700 font-semibold text-[14px]'
+            }`}
+          >
+            图片
+          </button>
+          <span className="text-neutral-300 font-light select-none">/</span>
+          <button 
+            id="tab-button-text"
+            onClick={() => {
+              setActiveTab('text');
+              setSearchQuery('');
+              setIsSearchExpanded(false);
+            }}
+            className={`transition-all duration-200 cursor-pointer ${
+              activeTab === 'text' 
+                ? 'text-neutral-900 font-extrabold text-[15px]' 
+                : 'text-neutral-400 hover:text-neutral-700 font-semibold text-[14px]'
+            }`}
+          >
+            文本
+          </button>
+        </div>
+        
+        {}
+        <div className="flex items-center select-none font-sans justify-end">
+          {activeTab === 'image' ? (
+            <div className="flex items-center animate-in fade-in duration-150">
+              <button 
+                id="action-btn-import"
+                onClick={() => fileInputRef.current?.click()} 
+                className="text-neutral-500 hover:text-neutral-900 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0"
+              >
+                <Upload className="w-3.5 h-3.5 text-neutral-400" />
+                <span>本地导入</span>
+              </button>
+              <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileSelect} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-4.5 animate-in fade-in duration-150">
+              <button 
+                id="action-btn-merge-copy"
+                onClick={() => {
+                  setIsTextSelectMode(!isTextSelectMode);
+                  if (isTextSelectMode) {
+                    setSelectedTextIds(new Set());
+                  }
+                }} 
+                className={`${isTextSelectMode ? 'text-neutral-900' : 'text-neutral-500 hover:text-neutral-900'} text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0`}
+              >
+                <Copy className="w-3.5 h-3.5 text-neutral-400" />
+                <span>{isTextSelectMode ? '取消合并' : '合并复制'}</span>
+              </button>
+
+              <div className="h-4 w-px bg-neutral-200 select-none"></div>
+
+              <button 
+                id="action-btn-clear"
+                onClick={clearUnpinnedTexts} 
+                className="text-red-500 hover:text-red-655 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                <span>清空未置顶</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      <div className="flex-1 flex overflow-hidden relative">
+        {}
+        {activeTab === 'image' && (
+          <div
+            className={`transition-[width,margin,opacity] duration-300 ease-in-out flex flex-col shrink-0 overflow-hidden ${
+              isSidebarCollapsed
+                ? 'w-0 ml-0 mt-4 mb-4 opacity-0 pointer-events-none'
+                : 'w-60 ml-6 mt-4 mb-4 opacity-100'
+            }`}
+          >
+            {}
+            <div className="flex-1 bg-white border border-neutral-100/60 rounded-2xl flex flex-col shadow-[0_16px_40px_-6px_rgba(0,0,0,0.06),_0_2px_8px_rgba(0,0,0,0.01)] h-full overflow-hidden">
+              {}
+              <div className="h-11 px-4 border-b border-neutral-100/60 flex items-center justify-between bg-white/40">
+                <span className="text-xs font-bold tracking-wider text-neutral-700">截图分类</span>
+                <button 
+                  onClick={() => setIsSidebarCollapsed(true)}
+                  className="text-neutral-400 hover:text-neutral-800 p-1 hover:bg-neutral-100/60 rounded-lg transition-all flex items-center justify-center"
+                  title="收起分类"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              </div>
+
+              {}
+              <div className="flex-1 overflow-y-auto p-2.5 space-y-1 scrollbar-none">
+                {}
+                <button
+                  onClick={() => setSelectedGroupId('all')}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between ${
+                    selectedGroupId === 'all'
+                      ? 'bg-[#191919] text-white shadow-sm'
+                      : 'text-neutral-500 hover:bg-neutral-100/60 hover:text-neutral-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <ImageIcon className={`w-3.5 h-3.5 shrink-0 ${selectedGroupId === 'all' ? 'text-white/90' : 'text-neutral-400'}`} />
+                    <span className="truncate">全部图片</span>
+                  </div>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full font-bold ${
+                    selectedGroupId === 'all' ? 'bg-white/10 text-white/90' : 'bg-neutral-150 text-neutral-500'
+                  }`}>
+                    {images.length}
+                  </span>
+                </button>
+
+                {}
+                <button
+                  onClick={() => setSelectedGroupId('default')}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between ${
+                    selectedGroupId === 'default'
+                      ? 'bg-[#191919] text-white shadow-sm'
+                      : 'text-neutral-500 hover:bg-neutral-100/60 hover:text-neutral-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <Folder className={`w-3.5 h-3.5 shrink-0 ${selectedGroupId === 'default' ? 'text-white/90' : 'text-neutral-400'}`} />
+                    <span className="truncate">默认分类</span>
+                  </div>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full font-bold ${
+                    selectedGroupId === 'default' ? 'bg-white/10 text-white/90' : 'bg-neutral-150 text-neutral-500'
+                  }`}>
+                    {images.filter(img => img.groupId === 'default' || !img.groupId).length}
+                  </span>
+                </button>
+
+                {}
+                {groups.filter(g => g.id !== 'default').map(g => {
+                  const count = images.filter(img => img.groupId === g.id).length;
+                  const isEditing = editingGroupId === g.id;
+                  const isSelected = selectedGroupId === g.id;
+
+                  return (
+                    <div
+                      key={g.id}
+                      className={`relative group/sidebar flex items-center justify-between px-1.5 py-1 rounded-xl transition-all ${
+                        isSelected
+                          ? 'bg-[#191919] text-white shadow-sm'
+                          : 'text-neutral-500 hover:bg-neutral-100/60 hover:text-neutral-800'
+                      }`}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setActiveGroupMenuId(g.id);
+                      }}
+                    >
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          defaultValue={g.name}
+                          autoFocus
+                          onBlur={(e) => handleRenameGroup(g.id, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleRenameGroup(g.id, e.currentTarget.value);
+                            if (e.key === 'Escape') setEditingGroupId(null);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-full text-xs font-semibold bg-white text-neutral-900 px-3 py-1.5 rounded-lg border border-neutral-250 focus:outline-none focus:ring-2 focus:ring-neutral-900/10 focus:border-neutral-900 transition-all"
+                        />
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => setSelectedGroupId(g.id)}
+                            className="flex-1 text-left px-2 py-1.5 text-xs font-bold truncate flex items-center gap-2"
+                          >
+                            <Folder className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-white/90' : 'text-neutral-400'}`} />
+                            <span className="truncate">{g.name}</span>
+                          </button>
+                          
+                          <div className="flex items-center gap-1.5 pr-1 shrink-0 relative">
+                            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full font-bold group-hover/sidebar:hidden ${
+                              isSelected ? 'bg-white/10 text-white/90' : 'bg-neutral-150 text-neutral-500'
+                            }`}>
+                              {count}
+                            </span>
+                            <button
+                              title="分类选项"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveGroupMenuId(activeGroupMenuId === g.id ? null : g.id);
+                              }}
+                              className={`hidden group-hover/sidebar:flex p-1 rounded-lg items-center justify-center transition-all shrink-0 ${
+                                isSelected ? 'text-white/80 hover:text-white hover:bg-white/10' : 'text-neutral-400 hover:text-neutral-800 hover:bg-neutral-100'
+                              }`}
+                            >
+                              <Settings className="w-3.5 h-3.5" />
+                            </button>
+
+                            {}
+                            {activeGroupMenuId === g.id && (
+                              <>
+                                {}
+                                <div 
+                                  className="fixed inset-0 z-40 cursor-default" 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveGroupMenuId(null);
+                                  }} 
+                                />
+                                <div 
+                                  className="absolute right-0 top-full mt-1 bg-white border border-neutral-100 shadow-xl rounded-xl py-1.5 z-50 w-28 text-xs font-sans text-neutral-850 flex flex-col font-semibold select-none anim-fade"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <button
+                                    onClick={() => {
+                                      setActiveGroupMenuId(null);
+                                      setEditingGroupId(g.id);
+                                    }}
+                                    className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-1.5 transition-colors font-semibold text-neutral-700 hover:text-neutral-900"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5 text-neutral-400" />
+                                    <span>重命名分类</span>
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setActiveGroupMenuId(null);
+                                      if (confirm(`确定要删除分类“${g.name}”吗？\n删除后，该分类下的图片将移回“默认分类”，不会被真的删除。`)) {
+                                        handleDeleteGroup(g.id);
+                                      }
+                                    }}
+                                    className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-655 flex items-center gap-1.5 transition-colors font-semibold border-t border-neutral-100/60 mt-1 pt-1.5"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                                    <span>删除分类</span>
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {}
+              <div className="p-3 border-t border-neutral-100/40 bg-white/30">
+                {isCreatingGroup ? (
+                   <div className="space-y-2">
+                    <input
+                      type="text"
+                      placeholder="分类名称..."
+                      value={newGroupName}
+                      onChange={(e) => setNewGroupName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleCreateGroup(newGroupName);
+                          setNewGroupName('');
+                          setIsCreatingGroup(false);
+                        }
+                        if (e.key === 'Escape') {
+                          setNewGroupName('');
+                          setIsCreatingGroup(false);
+                        }
+                      }}
+                      autoFocus
+                      className="w-full bg-white border border-neutral-250 focus:border-neutral-350 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#191919]/10 transition-all font-semibold"
+                    />
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        onClick={() => {
+                          setNewGroupName('');
+                          setIsCreatingGroup(false);
+                        }}
+                        className="text-xs text-neutral-500 hover:text-neutral-800 bg-neutral-100 px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer"
+                      >
+                        取消
+                      </button>
+                      <button
+                        onClick={() => {
+                          handleCreateGroup(newGroupName);
+                          setNewGroupName('');
+                          setIsCreatingGroup(false);
+                        }}
+                        className="text-xs text-white bg-[#191919] hover:bg-black px-2.5 py-1 rounded-lg font-bold transition-all shadow-sm cursor-pointer"
+                      >
+                        确定
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsCreatingGroup(true)}
+                    className="w-full py-2.5 text-xs text-neutral-600 hover:text-neutral-950 bg-transparent hover:bg-neutral-50/85 border border-neutral-200 hover:border-neutral-300 rounded-xl transition-all font-bold flex items-center justify-center gap-1 shadow-none cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>新建分类</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {}
+        <main 
+          onMouseDown={handleMouseDown}
+          className="flex-1 relative p-6 overflow-hidden overflow-y-auto select-none bg-[#F7F7F7]"
+        >
+          {}
+          <div className="absolute top-4 right-6 z-45 select-text">
+            <div 
+              className={`flex items-center bg-white border border-neutral-200/80 shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-350 rounded-full h-10 ${
+                isSearchExpanded ? 'w-64 px-3.5' : 'w-10 justify-center cursor-pointer hover:bg-neutral-50/80'
+              }`}
+              onClick={() => {
+                if (!isSearchExpanded) setIsSearchExpanded(true);
+              }}
+            >
+              <Search className="w-4 h-4 text-neutral-500 shrink-0 select-none cursor-pointer" />
+              {isSearchExpanded && (
+                <input
+                  type="text"
+                  placeholder={activeTab === 'image' ? "搜索图片名称..." : "搜索文本记录..."}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  autoFocus
+                  className="bg-transparent border-0 text-xs w-full pl-2 focus:outline-none placeholder-neutral-400 text-neutral-800 font-medium h-full"
+                  onBlur={() => {
+                    if (!searchQuery) {
+                      setIsSearchExpanded(false);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setIsSearchExpanded(false);
+                      setSearchQuery('');
+                    }
+                  }}
+                />
+              )}
+              {isSearchExpanded && searchQuery && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSearchQuery('');
+                  }}
+                  className="text-neutral-400 hover:text-neutral-600 text-[10px] bg-neutral-100 hover:bg-neutral-200 w-4 h-4 rounded-full flex items-center justify-center shrink-0 ml-1 cursor-pointer border-0"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          {}
+          <AnimatePresence>
+            {activeTab === 'image' && isSidebarCollapsed && (
+              <motion.button
+                initial={{ x: -50, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -100, opacity: 0 }}
+                transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+                onClick={() => setIsSidebarCollapsed(false)}
+                className="absolute top-4 left-4 bg-white/80 backdrop-blur-md hover:bg-white p-2.5 rounded-xl shadow-lg border border-neutral-200/50 text-neutral-600 hover:text-[#191919] z-30 transition-all flex items-center gap-1.5 font-bold focus:outline-none select-none cursor-pointer text-xs"
+                title="展开分类"
+              >
+                <Folder className="w-3.5 h-3.5 text-neutral-500" />
+                <span>展开分类</span>
+              </motion.button>
+            )}
+          </AnimatePresence>
+          {}
+          {dragStart && dragEnd && (
+            <div
+              style={{
+                position: 'fixed',
+                left: `${Math.min(dragStart.x, dragEnd.x)}px`,
+                top: `${Math.min(dragStart.y, dragEnd.y)}px`,
+                width: `${Math.abs(dragStart.x - dragEnd.x)}px`,
+                height: `${Math.abs(dragStart.y - dragEnd.y)}px`,
+                backgroundColor: 'rgba(25, 25, 25, 0.08)',
+                border: '1.5px solid rgb(25, 25, 25)',
+                borderRadius: '3px',
+                pointerEvents: 'none',
+                zIndex: 9999,
+              }}
+            />
+          )}
+
+          {activeTab === 'image' ? (
+            images.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-[65vh] text-[#999999]">
+                <p className="font-sans text-xs tracking-widest text-[#999999] mb-2 uppercase select-none">暂无图片</p>
+                <p className="font-sans text-xs text-center line-clamp-2 select-none">你可以复制任意图片或截图，在此按 Ctrl+V 直接导入</p>
+              </div>
+            ) : filteredImages.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-[65vh] text-[#999999]">
+                <p className="font-sans text-xs select-none">没有找到相关的图片记录</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-4 content-start">
+                <AnimatePresence>
+                  {visibleImages.map(img => (
+                    <ImageCard
+                      key={img.id}
+                      image={img}
+                      isSelected={selectedIds.has(img.id)}
+                      isCopied={copiedId === img.id}
+                      isSelectionMode={selectedIds.size > 0}
+                      onClick={(e) => handleImageClick(e, img)}
+                      onToggleSelect={handleToggleSelect}
+                      onContextMenu={handleContextMenu}
+                      groups={groups}
+                      onRenameImage={handleRenameImage}
+                      onMoveImage={handleMoveImage}
+                    />
+                  ))}
+                </AnimatePresence>
+              </div>
+            )
+          ) : (
+            <div className="flex flex-col h-full">
+              {}
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (newTextContent.trim()) {
+                    saveTextClip(newTextContent);
+                    setNewTextContent('');
+                  }
+                }}
+                className="flex gap-2 max-w-2xl mx-auto mb-6 w-full shrink-0 select-text"
+              >
+                <input 
+                  type="text" 
+                  placeholder="在此输入新的文本内容，键盘按 Enter 键即可快速保存..."
+                  value={newTextContent}
+                  onChange={(e) => setNewTextContent(e.target.value)}
+                  className="flex-1 bg-white border border-[#D1D1D1] rounded-lg px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#191919]/15 focus:border-[#191919] transition-all shadow-sm"
+                />
+                <button 
+                  type="submit"
+                  className="bg-[#1A1A1A] hover:bg-black text-white text-xs font-bold px-5 py-2.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm shrink-0"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  新建 (Enter)
+                </button>
+              </form>
+
+              <div className="flex-1 overflow-y-auto">
+                {texts.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-[50vh] text-[#999999]">
+                    <p className="font-sans text-xs tracking-widest text-[#999999] mb-2 uppercase select-none">暂无文本记录</p>
+                    <p className="font-sans text-xs select-none">你可以复制任意网页文字在此按 Ctrl+V 自动导入，或在上方输入手动保存</p>
+                  </div>
+                ) : filteredTexts.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-[50vh] text-[#999999]">
+                    <p className="font-sans text-xs select-none">没有找到匹配的文本记录</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 content-start">
+                    <AnimatePresence>
+                      {filteredTexts.map(text => (
+                        <TextCard
+                          key={text.id}
+                          text={text}
+                          isSelected={selectedTextIds.has(text.id)}
+                          isCopied={copiedTextId === text.id}
+                          isSelectionMode={isTextSelectMode || selectedTextIds.size > 0}
+                          onClick={(e) => handleTextClick(e, text)}
+                          onCopy={() => copyTextToClipboard(text)}
+                          onDelete={() => deleteText(text.id)}
+                          onTogglePin={() => handleTogglePinText(text)}
+                          onToggleSelect={handleToggleSelectText}
+                          onContextMenu={(e) => handleTextContextMenu(e, text)}
+                          onEdit={() => {
+                            setEditingText(text);
+                            setEditingTextContent(text.content);
+                          }}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {}
+      <AnimatePresence>
+        {activeTab === 'image' && selectedIds.size > 0 && (
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#191919]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_24px_50px_rgba(0,0,0,0.3)] rounded-2xl p-2 flex items-center gap-2 z-40 select-none font-sans text-xs"
+          >
+            <span className="pl-3.5 pr-2.5 text-xs font-bold text-white tracking-wide font-sans">
+              已选中 {selectedIds.size} 张图片
+            </span>
+            <div className="w-px h-4 bg-neutral-800 mx-1.5" />
+            
+            <button
+              onClick={toggleSelectAll}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
+            >
+              {selectedIds.size === filteredImages.length ? '取消全选' : '全选分类'}
+            </button>
+            <button
+              onClick={copyMultiple}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-300 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5 text-neutral-450" />
+              <span>一键复制</span>
+            </button>
+
+            {}
+            <div className="relative">
+              <button
+                onClick={() => setIsBatchMoveMenuOpen(!isBatchMoveMenuOpen)}
+                className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer ${
+                  isBatchMoveMenuOpen 
+                    ? 'bg-neutral-800 text-white' 
+                    : 'text-neutral-300 hover:text-white hover:bg-neutral-800/80'
+                }`}
+              >
+                <Folder className="w-3.5 h-3.5 text-neutral-450" />
+                <span>移至分类</span>
+                <ChevronDown className="w-3.5 h-3.5 text-neutral-450 transition-transform duration-200" style={{ transform: isBatchMoveMenuOpen ? 'rotate(180deg)' : 'none' }} />
+              </button>
+
+              {isBatchMoveMenuOpen && (
+                <>
+                  <div 
+                    className="fixed inset-0 z-40 cursor-default" 
+                    onClick={() => setIsBatchMoveMenuOpen(false)} 
+                  />
+                  <div className="absolute bottom-full mb-3 left-0 bg-[#222222]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_12px_32px_rgba(0,0,0,0.4)] rounded-xl py-1.5 min-w-[170px] z-50 flex flex-col font-sans text-neutral-300 select-none">
+                    <div className="px-3.5 py-2 text-[10px] font-bold text-neutral-500 border-b border-neutral-800/60 tracking-wider">
+                      选择目标分类
+                    </div>
+                    
+                    {}
+                    <button
+                      onClick={() => {
+                        handleMoveMultipleImages('default');
+                        setIsBatchMoveMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 hover:bg-neutral-800/60 hover:text-white flex items-center gap-2 transition-colors font-bold"
+                    >
+                      <Folder className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                      <span>默认分类</span>
+                    </button>
+
+                    {}
+                    {groups.filter(g => g.id !== 'default').map(group => (
+                      <button
+                        key={group.id}
+                        onClick={() => {
+                          handleMoveMultipleImages(group.id);
+                          setIsBatchMoveMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 hover:bg-neutral-800/60 hover:text-white flex items-center gap-2 transition-colors font-bold truncate"
+                      >
+                        <Folder className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                        <span className="truncate">{group.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button
+              onClick={deleteSelected}
+              className="px-3.5 py-2 text-xs font-bold text-red-400 hover:text-red-350 hover:bg-red-950/40 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>删除选中</span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {}
+      <AnimatePresence>
+        {activeTab === 'text' && (isTextSelectMode || selectedTextIds.size > 0) && (
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#191919]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_24px_50px_rgba(0,0,0,0.3)] rounded-2xl p-2 flex items-center gap-1.5 z-40 select-none font-sans text-xs"
+          >
+            <span className="pl-3.5 pr-2.5 text-xs font-bold text-white tracking-wide font-sans">
+              已选中 {selectedTextIds.size} 条文本
+            </span>
+            <div className="w-px h-4 bg-neutral-800 mx-1.5" />
+            <button
+              onClick={() => {
+                if (selectedTextIds.size === texts.length) {
+                  setSelectedTextIds(new Set());
+                } else {
+                  setSelectedTextIds(new Set(texts.map(t => t.id)));
+                }
+              }}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
+            >
+              {selectedTextIds.size === texts.length ? '取消全选' : '全选所有'}
+            </button>
+            <button
+              onClick={() => {
+                copySelectedTexts();
+                setIsTextSelectMode(false);
+                setSelectedTextIds(new Set());
+              }}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-300 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5 text-neutral-450" />
+              <span>合并复制</span>
+            </button>
+            <button
+              onClick={deleteSelectedTexts}
+              className="px-3.5 py-2 text-xs font-bold text-red-400 hover:text-red-350 hover:bg-red-950/40 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>删除选中</span>
+            </button>
+            <div className="w-px h-4 bg-neutral-800 mx-1.5" />
+            <button
+              onClick={() => {
+                setIsTextSelectMode(false);
+                setSelectedTextIds(new Set());
+              }}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
+            >
+              退出
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {}
+      {contextMenu && (
+        <ContextMenu
+          position={{ x: contextMenu.x, y: contextMenu.y }}
+          onClose={() => setContextMenu(null)}
+          isSelected={selectedIds.has(contextMenu.image.id)}
+          onSelectToggle={() => {
+            const newSet = new Set(selectedIds);
+            if (newSet.has(contextMenu.image.id)) newSet.delete(contextMenu.image.id);
+            else newSet.add(contextMenu.image.id);
+            setSelectedIds(newSet);
+          }}
+          onOpen={() => openImagePath(contextMenu.image.url)}
+          onDownload={() => {
+            const a = document.createElement('a');
+            a.href = resolveImageUrl(contextMenu.image.url);
+            a.download = contextMenu.image.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast('开始下载图片');
+          }}
+          onDelete={() => {
+            removeImage(contextMenu.image.id).then(() => {
+              setImages(prev => prev.filter(img => img.id !== contextMenu.image.id));
+              showToast('图片已删除');
+            });
+            const newSet = new Set(selectedIds);
+            newSet.delete(contextMenu.image.id);
+            setSelectedIds(newSet);
+          }}
+          onViewInfo={() => {
+            const img = new Image();
+            img.onload = () => {
+              alert(`图片分辨率: ${img.width}x${img.height}px\n归属分类: ${groups.find(g => g.id === contextMenu.image.groupId)?.name || '默认分类'}\n保存时间: ${new Date(contextMenu.image.createdAt).toLocaleString()}`);
+            };
+            img.src = resolveImageUrl(contextMenu.image.url);
+          }}
+        />
+      )}
+
+      {}
+      {textContextMenu && (
+        <div
+          style={{ top: `${textContextMenu.y}px`, left: `${textContextMenu.x}px` }}
+          className="fixed z-50 bg-[#222222]/95 backdrop-blur-xl border border-neutral-800 shadow-2xl rounded-xl py-1.5 w-48 text-xs font-sans text-neutral-300 select-none animate-in fade-in zoom-in-95 duration-100"
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          {}
+          <div 
+            className="fixed inset-0 z-[-1] cursor-default" 
+            onClick={() => setTextContextMenu(null)} 
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTextContextMenu(null);
+            }} 
+          />
+          
+          <button
+            onClick={() => {
+              copyTextToClipboard(textContextMenu.text);
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2.5 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <Copy className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+            <span>复制文本</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setEditingText(textContextMenu.text);
+              setEditingTextContent(textContextMenu.text.content);
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2.5 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <Edit2 className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+            <span>编辑内容</span>
+          </button>
+
+          <button
+            onClick={() => {
+              handleTogglePinText(textContextMenu.text);
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2.5 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <Pin className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+            <span>{textContextMenu.text.isPinned ? '取消置顶' : '固定置顶'}</span>
+          </button>
+
+          <div className="h-px bg-neutral-800/60 my-1" />
+          <div className="px-3.5 py-1 text-[9px] font-bold text-neutral-500 uppercase tracking-widest select-none">
+            导出剪贴
+          </div>
+
+          <button
+            onClick={() => {
+              exportTextAsFile(textContextMenu.text, 'txt');
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <span className="text-[10px] bg-neutral-800 text-neutral-400 font-sans font-extrabold px-1 rounded uppercase min-w-[32px] text-center">TXT</span>
+            <span>导出为纯文件</span>
+          </button>
+
+          <button
+            onClick={() => {
+              exportTextAsFile(textContextMenu.text, 'md');
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <span className="text-[10px] bg-sky-950 text-sky-400 font-sans font-extrabold px-1 rounded uppercase min-w-[32px] text-center">MD</span>
+            <span>导出为 Markdown</span>
+          </button>
+
+          <button
+            onClick={() => {
+              exportTextAsFile(textContextMenu.text, 'html');
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <span className="text-[10px] bg-emerald-950 text-emerald-400 font-sans font-extrabold px-1 rounded uppercase min-w-[32px] text-center">HTML</span>
+            <span>导出为网页格式</span>
+          </button>
+
+          <button
+            onClick={() => {
+              exportTextAsFile(textContextMenu.text, 'docx');
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <span className="text-[10px] bg-blue-950 text-blue-400 font-sans font-extrabold px-1 rounded uppercase min-w-[32px] text-center">DOCX</span>
+            <span>导出为 Word 文档</span>
+          </button>
+
+          <div className="h-px bg-neutral-800/60 my-1" />
+
+          <button
+            onClick={() => {
+              deleteText(textContextMenu.text.id);
+              setTextContextMenu(null);
+            }}
+            className="w-full px-3.5 py-2.5 hover:bg-red-950/40 text-red-450 hover:text-red-300 cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5 shrink-0" />
+            <span>删除记录</span>
+          </button>
+        </div>
+      )}
+
+      {}
+      <AnimatePresence>
+        {editingText && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.93 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.93 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 280 }}
+              className="bg-white border border-neutral-200/80 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh] text-[#1a1a1a] font-sans"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {}
+              <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/50">
+                <span className="text-sm font-bold text-neutral-800">编辑文本剪贴内容</span>
+                <span className="text-xs font-mono text-neutral-400 capitalize bg-neutral-105 px-2 py-0.5 rounded-md">
+                  {editingTextContent.length} 个字符
+                </span>
+              </div>
+
+              {}
+              <div className="p-5 flex-1 overflow-y-auto">
+                <textarea
+                  className="w-full min-h-[220px] max-h-[380px] p-4 bg-neutral-50 border border-neutral-250 hover:border-neutral-350 focus:bg-white rounded-xl focus:outline-none focus:ring-4 focus:ring-[#191919]/5 focus:border-[#191919] text-xs font-mono text-[#222222] leading-relaxed resize-y shadow-inner transition-all-300"
+                  value={editingTextContent}
+                  onChange={(e) => setEditingTextContent(e.target.value)}
+                  placeholder="请输入剪贴内容..."
+                  autoFocus
+                />
+              </div>
+
+              {}
+              <div className="px-5 py-3 border-t border-neutral-100 bg-neutral-50/50 flex items-center justify-end gap-2.5">
+                <button
+                  onClick={() => setEditingText(null)}
+                  className="px-4 py-2 text-xs font-bold text-neutral-600 hover:text-neutral-900 bg-neutral-100 hover:bg-neutral-200/80 rounded-xl transition-all cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleSaveEditText}
+                  className="px-5 py-2 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-xl transition-all shadow-md cursor-pointer active:scale-95"
+                >
+                  保存修改
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {}
+      <AnimatePresence>
+        {toast.visible && (
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed bottom-20 left-1/2 -translate-x-1/2 bg-[#1A1A1A] text-white px-4 py-2 border border-[#333333] shadow-lg rounded-lg text-xs font-medium tracking-wide z-50 pointer-events-none select-none flex items-center gap-2"
+          >
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {}
+      <footer className="h-8 shrink-0 border-t border-[#D1D1D1] bg-[#F9F9F9] px-4 flex items-center justify-between font-mono text-xs text-[#666666] tracking-widest z-10 select-none">
+        <div>OpenCut 本地剪贴板</div>
+        <div className="flex gap-6 pr-1">
+          {activeTab === 'image' ? (
+            <>
+              <span>[选择] 勾选圆圈多选</span>
+              <span>[复制] 单击卡片图片复制</span>
+              <span>[命名] 双击标题重命名</span>
+              <span>[右键] 更多操作菜单</span>
+              <span>[粘贴] Ctrl+V 快捷导入</span>
+              <span>[框选] 鼠标拖拽批量选中</span>
+            </>
+          ) : (
+            <>
+              <span>[选择] 勾选圆圈多选</span>
+              <span>[复制] 单击内容快速复制</span>
+              <span>[保存] 输入框 Enter 快捷保存</span>
+              <span>[粘贴] Ctrl+V 快捷导入文本</span>
+              <span>[删除] Delete 键删除选中</span>
+              <span>[框选] 鼠标拖拽批量选中</span>
+            </>
+          )}
+        </div>
+      </footer>
+    </div>
+  );
+}

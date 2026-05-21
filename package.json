@@ -1,0 +1,33 @@
+{
+  "name": "opencut",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:web": "vite",
+    "build": "tauri build",
+    "build:web": "vite build",
+    "tauri": "tauri",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist src-tauri/target"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/node": "^22.14.0",
+    "autoprefixer": "^10.4.21",
+    "tailwindcss": "^4.1.14",
+    "typescript": "~5.8.2"
+  }
+}
