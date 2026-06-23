@@ -63,13 +63,6 @@ impl Storage {
         write_json(&self.texts_path(), texts)
     }
 
-    pub fn has_text_content(&self, content: &str) -> bool {
-        let key = content.trim();
-        self.read_texts()
-            .iter()
-            .any(|t| t.content.trim() == key)
-    }
-
     pub fn read_metadata(&self) -> MetadataStore {
         read_json(&self.metadata_path()).unwrap_or_else(|_| MetadataStore {
             groups: vec![Group {
@@ -313,39 +306,6 @@ impl Storage {
         }
 
         Ok(())
-    }
-
-    pub fn dedupe_existing_texts(&self) -> Result<(), String> {
-        let texts = self.read_texts();
-        let mut best: HashMap<String, TextClip> = HashMap::new();
-
-        for text in texts {
-            let key = text.content.trim().to_string();
-            if key.is_empty() {
-                continue;
-            }
-            match best.get(&key) {
-                None => {
-                    best.insert(key, text);
-                }
-                Some(existing) => {
-                    let keep_new = (text.is_pinned && !existing.is_pinned)
-                        || (text.is_pinned == existing.is_pinned
-                            && text.created_at > existing.created_at);
-                    if keep_new {
-                        best.insert(key, text);
-                    }
-                }
-            }
-        }
-
-        let mut deduped: Vec<_> = best.into_values().collect();
-        deduped.sort_by(|a, b| match (a.is_pinned, b.is_pinned) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => b.created_at.cmp(&a.created_at),
-        });
-        self.write_texts(&deduped)
     }
 
     fn find_image_by_digest(&self, digest: &str) -> Result<Option<String>, String> {

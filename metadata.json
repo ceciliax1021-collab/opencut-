@@ -1,0 +1,6 @@
+{
+  "name": "OpenCut",
+  "description": "OpenCut is a light, visual cloud clipboard manager supporting both visual images and text clippings.",
+  "requestFramePermissions": ["clipboard-read", "clipboard-write"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

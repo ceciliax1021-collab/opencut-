@@ -30,34 +30,21 @@ export function ContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    function handlePointerDown(event: MouseEvent) {
+    function handleClickOutside(event: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         onClose();
       }
-    }
-    function handleContextMenu(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        onClose();
-      }
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
     }
     
-    document.addEventListener('mousedown', handlePointerDown, true);
-    document.addEventListener('contextmenu', handleContextMenu, true);
-    window.addEventListener('scroll', onClose, true);
-    window.addEventListener('resize', onClose);
-    window.addEventListener('blur', onClose);
-    document.addEventListener('keydown', handleKeyDown);
 
+    setTimeout(() => {
+      document.addEventListener('click', handleClickOutside);
+      document.addEventListener('contextmenu', handleClickOutside);
+    }, 10);
+    
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown, true);
-      document.removeEventListener('contextmenu', handleContextMenu, true);
-      window.removeEventListener('scroll', onClose, true);
-      window.removeEventListener('resize', onClose);
-      window.removeEventListener('blur', onClose);
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('click', handleClickOutside);
+      document.removeEventListener('contextmenu', handleClickOutside);
     };
   }, [onClose]);
 

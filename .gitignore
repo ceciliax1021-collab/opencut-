@@ -1,33 +1,12 @@
-# Dependencies
 node_modules/
-
-# Build outputs
 build/
 dist/
 coverage/
 src-tauri/target/
 src-tauri/gen/
-
-# Local uploads
 uploads/
-
-# Release artifacts
 release/*.dmg
 release/*.zip
-release/*.exe
-
-# OS files
 .DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
 *.log
-
-# Environment
 .env*

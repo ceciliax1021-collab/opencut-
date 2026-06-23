@@ -9,6 +9,7 @@ import {
   saveText as storeText,
   togglePinText,
   deleteText as removeText,
+  clearUnpinnedTexts as clearTexts,
   uploadImage,
   deleteImage as removeImage,
   renameImage,
@@ -23,112 +24,25 @@ import {
   onClipUpdated,
   resolveImageUrl,
   quitApp,
-  checkSmartCleanup,
-  addDeletedContentToCleanup,
-  getSmartCleanupConfig,
-  saveSmartCleanupConfig,
-  type SmartCleanupConfig,
-  type CleanupRule,
 } from './lib/local';
-import {
-  Copy,
-  Trash2,
-  Image as ImageIcon,
-  Upload,
-  Pin,
-  Folder,
-  Plus,
-  Edit2,
+import { 
+  Copy, 
+  Trash2, 
+  DownloadCloud, 
+  Image as ImageIcon, 
+  Upload, 
+  Pin, 
+  Clipboard, 
+  Sparkles, 
+  Folder, 
+  Plus, 
+  Edit2, 
   ChevronDown,
   Settings,
   ChevronLeft,
-  Search,
-  Sparkles,
-  LayoutGrid,
-  Check,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-
-type TextSortMode = 'time-desc' | 'time-asc';
-type TextGroupMode = 'none' | 'day' | 'week';
-
-interface TextGroup {
-  label: string;
-  key: string;
-  texts: TextClip[];
-}
-
-function groupTexts(texts: TextClip[], mode: TextGroupMode): TextGroup[] {
-  if (mode === 'none') return [{ label: '全部', key: 'all', texts }];
-
-  if (mode === 'week') {
-    const now = new Date();
-    const getWeekStart = (date: Date) => {
-      const d = new Date(date);
-      const day = d.getDay();
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-      d.setDate(diff);
-      d.setHours(0, 0, 0, 0);
-      return d;
-    };
-
-    const currentWeekStart = getWeekStart(now);
-    const groups: TextGroup[] = [];
-    const thisWeek: TextClip[] = [];
-    const lastWeek: TextClip[] = [];
-    const twoWeeksAgo: TextClip[] = [];
-    const older: TextClip[] = [];
-
-    for (const t of texts) {
-      const tDate = new Date(t.createdAt);
-      const tWeekStart = getWeekStart(tDate);
-      const diffWeeks = Math.floor((currentWeekStart.getTime() - tWeekStart.getTime()) / (7 * 24 * 60 * 60 * 1000));
-
-      if (diffWeeks === 0) thisWeek.push(t);
-      else if (diffWeeks === 1) lastWeek.push(t);
-      else if (diffWeeks === 2) twoWeeksAgo.push(t);
-      else older.push(t);
-    }
-
-    if (thisWeek.length) groups.push({ label: '本周', key: 'thisWeek', texts: thisWeek });
-    if (lastWeek.length) groups.push({ label: '上周', key: 'lastWeek', texts: lastWeek });
-    if (twoWeeksAgo.length) groups.push({ label: '两周前', key: 'twoWeeksAgo', texts: twoWeeksAgo });
-    if (older.length) groups.push({ label: '更早', key: 'older', texts: older });
-
-    return groups;
-  }
-
-  // Day mode
-  const now = Date.now();
-  const groups: TextGroup[] = [];
-
-  const today: TextClip[] = [];
-  const yesterday: TextClip[] = [];
-  const within3Days: TextClip[] = [];
-  const withinWeek: TextClip[] = [];
-  const withinMonth: TextClip[] = [];
-  const older: TextClip[] = [];
-
-  for (const t of texts) {
-    const diff = now - t.createdAt;
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    if (days === 0) today.push(t);
-    else if (days === 1) yesterday.push(t);
-    else if (days <= 3) within3Days.push(t);
-    else if (days <= 7) withinWeek.push(t);
-    else if (days <= 30) withinMonth.push(t);
-    else older.push(t);
-  }
-
-  if (today.length) groups.push({ label: '今天', key: 'today', texts: today });
-  if (yesterday.length) groups.push({ label: '昨天', key: 'yesterday', texts: yesterday });
-  if (within3Days.length) groups.push({ label: '三天内', key: 'within3Days', texts: within3Days });
-  if (withinWeek.length) groups.push({ label: '一周内', key: 'withinWeek', texts: withinWeek });
-  if (withinMonth.length) groups.push({ label: '一个月内', key: 'withinMonth', texts: withinMonth });
-  if (older.length) groups.push({ label: '更早', key: 'older', texts: older });
-
-  return groups;
-}
 
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
@@ -143,14 +57,15 @@ export default function App() {
   const scrollRestoreRef = useRef<{ top: number; left: number } | null>(null);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [mainViewportScroll, setMainViewportScroll] = useState({ top: 0, left: 0 });
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [activeGroupMenuId, setActiveGroupMenuId] = useState<string | null>(null);
   const [isBatchMoveMenuOpen, setIsBatchMoveMenuOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'image' | 'text'>('text');
-  const [showTextNewForm, setShowTextNewForm] = useState(false);
+  const [activeTab, setActiveTab] = useState<'image' | 'text'>('image');
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
 
   const [texts, setTexts] = useState<TextClip[]>([]);
   const [newTextContent, setNewTextContent] = useState('');
@@ -159,35 +74,9 @@ export default function App() {
   const [editingText, setEditingText] = useState<TextClip | null>(null);
   const [editingTextContent, setEditingTextContent] = useState('');
   const [textContextMenu, setTextContextMenu] = useState<{ x: number, y: number, text: TextClip } | null>(null);
-  const [textCleanupDialog, setTextCleanupDialog] = useState<{
-    title: string;
-    clips: TextClip[];
-    selectedIds: Set<string>;
-  } | null>(null);
-  const [smartCleanupDialog, setSmartCleanupDialog] = useState<{
-    clips: TextClip[];
-    selectedIds: Set<string>;
-    config: SmartCleanupConfig;
-  } | null>(null);
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
-
-  // Text sort & group state
-  const [textSortMode, setTextSortMode] = useState<TextSortMode>('time-desc');
-  const [textGroupMode, setTextGroupMode] = useState<TextGroupMode>('none');
-  const [showViewMenu, setShowViewMenu] = useState(false);
-  const [showCleanupMenu, setShowCleanupMenu] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-
-  const toggleGroupCollapse = (key: string) => {
-    setCollapsedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
 
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -262,6 +151,7 @@ export default function App() {
     const restore = () => {
       el.scrollTop = target.top;
       el.scrollLeft = target.left;
+      setMainViewportScroll({ top: target.top, left: target.left });
     };
 
     restore();
@@ -281,12 +171,9 @@ export default function App() {
     try {
       const newClip = await storeText(content);
       setTexts(prev => {
-        const key = content.trim();
-        const withoutDupes = prev.filter(t => t.content.trim() !== key);
-        return [newClip, ...withoutDupes];
+        const filtered = prev.filter(t => t.content !== content);
+        return [newClip, ...filtered];
       });
-      setShowTextNewForm(false);
-      setNewTextContent('');
       showToast('文本已保存');
     } catch (e) {
       console.error(e);
@@ -309,12 +196,8 @@ export default function App() {
     }
   };
 
-  const deleteText = async (id: string, content?: string) => {
+  const deleteText = async (id: string) => {
     try {
-      // Add to smart cleanup history if content provided
-      if (content) {
-        addDeletedContentToCleanup(content).catch(() => {});
-      }
       await removeText(id);
       setTexts(prev => prev.filter(t => t.id !== id));
       setSelectedTextIds(prev => {
@@ -329,140 +212,15 @@ export default function App() {
     }
   };
 
-  const getClipLength = (text: TextClip) => Array.from(text.content.trim()).length;
-
-  const openTextCleanupDialog = () => {
-    const clips = texts.filter(t => getClipLength(t) <= 5);
-    if (clips.length === 0) {
-      showToast('没有符合条件的文本剪贴');
-      return;
-    }
-
-    setTextCleanupDialog({
-      title: '清除 5 字内的文本板',
-      clips,
-      selectedIds: new Set(clips.map(clip => clip.id)),
-    });
-  };
-
-  const confirmTextCleanup = async () => {
-    if (!textCleanupDialog) return;
-    const ids = Array.from(textCleanupDialog.selectedIds) as string[];
-    if (ids.length === 0) {
-      setTextCleanupDialog(null);
-      showToast('没有选择要清空的文本');
-      return;
-    }
-
+  const clearUnpinnedTexts = async () => {
     try {
-      // Add deleted content to cleanup history
-      for (const clip of textCleanupDialog.clips) {
-        if (textCleanupDialog.selectedIds.has(clip.id)) {
-          addDeletedContentToCleanup(clip.content).catch(() => {});
-        }
-      }
-      await Promise.all(ids.map(id => removeText(id)));
-      setTexts(prev => prev.filter(text => !textCleanupDialog.selectedIds.has(text.id)));
-      setSelectedTextIds(prev => {
-        const next = new Set(prev);
-        ids.forEach(id => next.delete(id));
-        return next;
-      });
-      setTextCleanupDialog(null);
-      showToast(`已清空 ${ids.length} 条文本剪贴`);
+      await clearTexts();
+      setTexts(prev => prev.filter(t => t.isPinned));
+      setSelectedTextIds(new Set());
+      showToast('已清空未置顶的文本记录');
     } catch (e) {
       console.error(e);
       showToast('清空失败');
-    }
-  };
-
-  // Smart Cleanup
-  const openSmartCleanup = async () => {
-    try {
-      const config = await getSmartCleanupConfig();
-      const matchedClips = await checkSmartCleanup();
-      if (matchedClips.length === 0) {
-        showToast('暂无需要智能清理的文本');
-        return;
-      }
-      setSmartCleanupDialog({
-        clips: matchedClips,
-        selectedIds: new Set(matchedClips.map(c => c.id)),
-        config,
-      });
-    } catch (e) {
-      console.error(e);
-      showToast('智能清理检查失败');
-    }
-  };
-
-  const confirmSmartCleanup = async () => {
-    if (!smartCleanupDialog) return;
-    const ids = Array.from(smartCleanupDialog.selectedIds) as string[];
-    if (ids.length === 0) {
-      setSmartCleanupDialog(null);
-      showToast('没有选择要清理的文本');
-      return;
-    }
-
-    try {
-      await Promise.all(ids.map(id => removeText(id)));
-      setTexts(prev => prev.filter(text => !smartCleanupDialog.selectedIds.has(text.id)));
-      setSelectedTextIds(prev => {
-        const next = new Set(prev);
-        ids.forEach(id => next.delete(id));
-        return next;
-      });
-      setSmartCleanupDialog(null);
-      showToast(`已智能清理 ${ids.length} 条文本`);
-    } catch (e) {
-      console.error(e);
-      showToast('清理失败');
-    }
-  };
-
-  const toggleSmartCleanupRule = async (ruleId: string) => {
-    if (!smartCleanupDialog) return;
-    const newConfig = { ...smartCleanupDialog.config };
-    newConfig.rules = newConfig.rules.map(r => 
-      r.id === ruleId ? { ...r, enabled: !r.enabled } : r
-    );
-    try {
-      await saveSmartCleanupConfig(newConfig);
-      // Re-check
-      const matchedClips = await checkSmartCleanup();
-      setSmartCleanupDialog({
-        clips: matchedClips,
-        selectedIds: new Set(matchedClips.map(c => c.id)),
-        config: newConfig,
-      });
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const excludeFromSmartCleanup = async (content: string) => {
-    if (!smartCleanupDialog) return;
-    const newConfig = { ...smartCleanupDialog.config };
-    if (!newConfig.excluded_content.includes(content)) {
-      newConfig.excluded_content.push(content);
-    }
-    // Also remove from selected
-    const clipToRemove = smartCleanupDialog.clips.find(c => c.content.trim() === content);
-    const newSelectedIds = new Set(smartCleanupDialog.selectedIds);
-    if (clipToRemove) newSelectedIds.delete(clipToRemove.id);
-
-    try {
-      await saveSmartCleanupConfig(newConfig);
-      const matchedClips = await checkSmartCleanup();
-      setSmartCleanupDialog({
-        clips: matchedClips,
-        selectedIds: new Set(matchedClips.map(c => c.id)),
-        config: newConfig,
-      });
-      showToast('已记住您的选择，下次不会再提示');
-    } catch (e) {
-      console.error(e);
     }
   };
 
@@ -589,14 +347,6 @@ export default function App() {
   const deleteSelectedTexts = async () => {
     if (selectedTextIds.size === 0) return;
     const idsToDelete: string[] = Array.from(selectedTextIds);
-    
-    // Save deleted content to smart cleanup
-    for (const t of texts) {
-      if (selectedTextIds.has(t.id)) {
-        addDeletedContentToCleanup(t.content).catch(() => {});
-      }
-    }
-    
     setTexts(prev => prev.filter(t => !selectedTextIds.has(t.id)));
     setSelectedTextIds(new Set());
     
@@ -676,47 +426,23 @@ export default function App() {
   };
 
   const handleImageClick = (e: React.MouseEvent, image: UploadedImage) => {
+
     const target = e.target as HTMLElement;
     if (target.closest('select, input, button')) return;
+    
 
-    if (selectedIds.size > 0) {
-      handleToggleSelect(image);
-      return;
-    }
     copyToClipboard(image);
   };
 
   const handleTextClick = (e: React.MouseEvent, text: TextClip) => {
     const target = e.target as HTMLElement;
     if (target.closest('button, select, input, svg')) return;
-    const selectedText = window.getSelection()?.toString();
-    if (target.closest('.text-card-content') && selectedText && selectedText.trim()) return;
 
-    if (isTextSelectMode || selectedTextIds.size > 0) {
-      handleToggleSelectText(text);
-      return;
-    }
     copyTextToClipboard(text);
-  };
-
-  const clearImageSelection = () => {
-    setSelectedIds(new Set());
-    setIsBatchMoveMenuOpen(false);
-    setContextMenu(null);
-  };
-
-  const clearTextSelection = () => {
-    setSelectedTextIds(new Set());
-    setIsTextSelectMode(false);
   };
 
   const handleTextContextMenu = (e: React.MouseEvent, text: TextClip) => {
     e.preventDefault();
-    const nextSelection = new Set(selectedTextIds);
-    if (selectedTextIds.size > 0 && !nextSelection.has(text.id)) {
-      nextSelection.add(text.id);
-      setSelectedTextIds(nextSelection);
-    }
     setTextContextMenu({ x: e.clientX, y: e.clientY, text });
   };
 
@@ -765,7 +491,7 @@ export default function App() {
 </head>
 <body>
   <div class="meta">Saved at: ${new Date(text.createdAt).toLocaleString()}</div>
-  <div class="content">${text.content.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>')}</div>
+  <div class="content">${text.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
 </body>
 </html>`;
         mimeType = 'text/html;charset=utf-8';
@@ -790,7 +516,7 @@ export default function App() {
 </head>
 <body>
   <div class="meta">Saved at: ${new Date(text.createdAt).toLocaleString()}</div>
-  <div>${text.content.split('\n').map(line => `<p>${line.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>')}</p>`).join('')}</div>
+  <div>${text.content.split('\n').map(line => `<p>${line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`).join('')}</div>
 </body>
 </html>`;
         mimeType = 'application/msword;charset=utf-8';
@@ -821,8 +547,10 @@ export default function App() {
     
     const newSet = new Set(selectedIds);
     if (allSelected) {
+
       visibleIds.forEach(id => newSet.delete(id));
     } else {
+
       visibleIds.forEach(id => newSet.add(id));
     }
     setSelectedIds(newSet);
@@ -834,7 +562,7 @@ export default function App() {
       const newGroup = await createGroup(name.trim());
       setGroups(prev => [...prev, newGroup]);
       setSelectedGroupId(newGroup.id);
-      showToast(`已创建"${newGroup.name}"分类`);
+      showToast(`已创建“${newGroup.name}”分类`);
     } catch (e) {
       console.error(e);
       showToast('新增分类失败');
@@ -899,7 +627,7 @@ export default function App() {
       setImages(prev => prev.map(img => ids.includes(img.id) ? { ...img, groupId: targetGroupId } : img));
       setSelectedIds(new Set());
       const destGroup = groups.find(g => g.id === targetGroupId) || { name: '默认分类' };
-      showToast(`成功将 ${ids.length} 张图片移动至"${destGroup.name}"`);
+      showToast(`成功将 ${ids.length} 张图片移动至“${destGroup.name}”`);
     } catch (e) {
       console.error(e);
       showToast('批量移动失败');
@@ -998,45 +726,11 @@ export default function App() {
     [filteredImages],
   );
 
-  // Sort and group texts
-  const processedTexts = useMemo(() => {
-    let sorted = [...texts].sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
-      return textSortMode === 'time-desc' 
-        ? b.createdAt - a.createdAt 
-        : a.createdAt - b.createdAt;
-    });
-
-    if (textGroupMode === 'none') {
-      return { groups: [{ label: '全部', key: 'all', texts: sorted }], flat: sorted };
-    }
-
-    const gs = groupTexts(sorted, textGroupMode);
-    return { groups: gs, flat: sorted };
-  }, [texts, textSortMode, textGroupMode]);
+  const filteredTexts = texts.filter(t => t.content.toLowerCase().includes(searchQuery.toLowerCase()));
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
-      if (e.key === 'Escape') {
-        if (contextMenu || textContextMenu || textCleanupDialog || smartCleanupDialog) {
-          setContextMenu(null);
-          setTextContextMenu(null);
-          setTextCleanupDialog(null);
-          setSmartCleanupDialog(null);
-          return;
-        }
-        if (activeTab === 'image' && selectedIds.size > 0) {
-          clearImageSelection();
-          return;
-        }
-        if (activeTab === 'text' && (isTextSelectMode || selectedTextIds.size > 0)) {
-          clearTextSelection();
-        }
-        return;
-      }
 
       if (e.key === 'Backspace' || e.key === 'Delete') {
         if (activeTab === 'image' && selectedIds.size > 0) {
@@ -1050,6 +744,7 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
         e.preventDefault();
         if (activeTab === 'image') {
+
           const visibleIds = filteredImages.map(img => img.id);
           setSelectedIds(new Set(visibleIds));
         } else if (activeTab === 'text') {
@@ -1081,37 +776,15 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedIds, selectedTextIds, images, texts, activeTab, selectedGroupId, copyMultiple, copySelectedTexts, filteredImages, isTextSelectMode, contextMenu, textContextMenu, textCleanupDialog, smartCleanupDialog]);
-
-  useEffect(() => {
-    if (!textContextMenu && !contextMenu) return;
-
-    const closeFloatingMenus = () => {
-      setTextContextMenu(null);
-      setContextMenu(null);
-    };
-
-    window.addEventListener('scroll', closeFloatingMenus, true);
-    window.addEventListener('resize', closeFloatingMenus);
-    window.addEventListener('blur', closeFloatingMenus);
-
-    return () => {
-      window.removeEventListener('scroll', closeFloatingMenus, true);
-      window.removeEventListener('resize', closeFloatingMenus);
-      window.removeEventListener('blur', closeFloatingMenus);
-    };
-  }, [textContextMenu, contextMenu]);
+  }, [selectedIds, selectedTextIds, images, texts, activeTab, selectedGroupId, copyMultiple, copySelectedTexts, filteredImages]);
 
   return (
     <div className="h-screen w-full bg-[#F2F2F2] text-[#1A1A1A] font-sans flex flex-col overflow-hidden">
-      {/* Header */}
+      {}
       <header className="h-16 bg-white border-b border-neutral-100 px-6 grid grid-cols-3 items-center z-25 shrink-0 select-none shadow-[0_2px_12px_rgba(0,0,0,0.02)]">
-        {/* Left: Logo */}
+        {}
         <div className="flex items-center gap-3.5 justify-start">
-          <div className="flex items-center gap-2">
-            <div className="opencut-mark" aria-hidden="true">*</div>
-            <div className="font-sans text-base font-bold tracking-tight text-neutral-900">OpenCut</div>
-          </div>
+          <div className="font-sans text-base font-black tracking-tight text-neutral-900">OpenCut</div>
           <div className="h-4 w-px bg-neutral-200"></div>
           <div className="text-[11px] font-sans font-medium text-neutral-500 bg-neutral-100 px-2.5 py-1 rounded-full flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
@@ -1119,179 +792,88 @@ export default function App() {
           </div>
         </div>
 
-        {/* Center: Tabs */}
+        {}
         <div className="flex items-center justify-center gap-3.5 select-none font-sans">
           <button 
             id="tab-button-image"
             onClick={() => {
               setActiveTab('image');
               setSearchQuery('');
-              setEditingText(null);
-              setCopiedTextId(null);
+              setIsSearchExpanded(false);
             }}
             className={`transition-all duration-200 cursor-pointer ${
               activeTab === 'image' 
-                ? 'text-neutral-900 font-bold text-sm'
-                : 'text-neutral-400 hover:text-neutral-700 font-medium text-sm'
+                ? 'text-neutral-900 font-extrabold text-[15px]' 
+                : 'text-neutral-400 hover:text-neutral-700 font-semibold text-[14px]'
             }`}
           >
             图片
           </button>
-          <span className="text-neutral-300 select-none text-sm">/</span>
+          <span className="text-neutral-300 font-light select-none">/</span>
           <button 
             id="tab-button-text"
             onClick={() => {
               setActiveTab('text');
               setSearchQuery('');
-              setCopiedId(null);
-              setContextMenu(null);
-              setIsBatchMoveMenuOpen(false);
+              setIsSearchExpanded(false);
             }}
             className={`transition-all duration-200 cursor-pointer ${
               activeTab === 'text' 
-                ? 'text-neutral-900 font-bold text-sm'
-                : 'text-neutral-400 hover:text-neutral-700 font-medium text-sm'
+                ? 'text-neutral-900 font-extrabold text-[15px]' 
+                : 'text-neutral-400 hover:text-neutral-700 font-semibold text-[14px]'
             }`}
           >
             文本
           </button>
         </div>
         
-        {/* Right: Actions */}
+        {}
         <div className="flex items-center select-none font-sans justify-end">
           {activeTab === 'image' ? (
-            <button
-              id="action-btn-import"
-              onClick={() => fileInputRef.current?.click()}
-              className="h-9 px-4 rounded-full bg-[#191919] text-white hover:bg-black text-xs font-bold transition-all flex items-center gap-2 shadow-sm cursor-pointer active:scale-[0.97]"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>本地导入</span>
-            </button>
+            <div className="flex items-center animate-in fade-in duration-150">
+              <button 
+                id="action-btn-import"
+                onClick={() => fileInputRef.current?.click()} 
+                className="text-neutral-500 hover:text-neutral-900 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0"
+              >
+                <Upload className="w-3.5 h-3.5 text-neutral-400" />
+                <span>本地导入</span>
+              </button>
+              <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileSelect} />
+            </div>
           ) : (
-            <div className="flex items-center gap-2">
-              {/* View button (unified sort + group) */}
-              <div className="relative">
-                <button
-                  onClick={() => { setShowViewMenu(!showViewMenu); setShowCleanupMenu(false); }}
-                  className="h-9 px-3 rounded-lg border text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300"
-                >
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                  <span>视图</span>
-                  <ChevronDown className={`w-3 h-3 transition-transform ${showViewMenu ? 'rotate-180' : ''}`} />
-                </button>
-                {showViewMenu && (
-                  <>
-                    <div className="fixed inset-0 z-[70] cursor-default" onClick={() => setShowViewMenu(false)} />
-                    <div className="absolute right-0 top-full mt-2 z-[90] w-44 rounded-xl border border-neutral-200 bg-white p-2 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.3)]">
-                      <div className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider px-2 py-1.5">排序方式</div>
-                      <button
-                        onClick={() => { setTextSortMode('time-desc'); setShowViewMenu(false); }}
-                        className={`w-full rounded-lg px-3 py-2 text-xs font-bold text-left transition-colors flex items-center justify-between ${
-                          textSortMode === 'time-desc' ? 'bg-neutral-100 text-neutral-900' : 'text-neutral-600 hover:bg-neutral-50'
-                        }`}
-                      >
-                        最新优先
-                        {textSortMode === 'time-desc' && <Check className="w-3 h-3" />}
-                      </button>
-                      <button
-                        onClick={() => { setTextSortMode('time-asc'); setShowViewMenu(false); }}
-                        className={`w-full rounded-lg px-3 py-2 text-xs font-bold text-left transition-colors flex items-center justify-between ${
-                          textSortMode === 'time-asc' ? 'bg-neutral-100 text-neutral-900' : 'text-neutral-600 hover:bg-neutral-50'
-                        }`}
-                      >
-                        最早优先
-                        {textSortMode === 'time-asc' && <Check className="w-3 h-3" />}
-                      </button>
-                      <div className="h-px bg-neutral-100 my-1.5" />
-                      <div className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider px-2 py-1.5">显示方式</div>
-                      <button
-                        onClick={() => { setTextGroupMode('none'); setShowViewMenu(false); }}
-                        className={`w-full rounded-lg px-3 py-2 text-xs font-bold text-left transition-colors flex items-center justify-between ${
-                          textGroupMode === 'none' ? 'bg-neutral-100 text-neutral-900' : 'text-neutral-600 hover:bg-neutral-50'
-                        }`}
-                      >
-                        不分组
-                        {textGroupMode === 'none' && <Check className="w-3 h-3" />}
-                      </button>
-                      <button
-                        onClick={() => { setTextGroupMode('day'); setShowViewMenu(false); }}
-                        className={`w-full rounded-lg px-3 py-2 text-xs font-bold text-left transition-colors flex items-center justify-between ${
-                          textGroupMode === 'day' ? 'bg-neutral-100 text-neutral-900' : 'text-neutral-600 hover:bg-neutral-50'
-                        }`}
-                      >
-                        按天分组
-                        {textGroupMode === 'day' && <Check className="w-3 h-3" />}
-                      </button>
-                      <button
-                        onClick={() => { setTextGroupMode('week'); setShowViewMenu(false); }}
-                        className={`w-full rounded-lg px-3 py-2 text-xs font-bold text-left transition-colors flex items-center justify-between ${
-                          textGroupMode === 'week' ? 'bg-neutral-100 text-neutral-900' : 'text-neutral-600 hover:bg-neutral-50'
-                        }`}
-                      >
-                        按周分组
-                        {textGroupMode === 'week' && <Check className="w-3 h-3" />}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
+            <div className="flex items-center gap-4.5 animate-in fade-in duration-150">
+              <button 
+                id="action-btn-merge-copy"
+                onClick={() => {
+                  setIsTextSelectMode(!isTextSelectMode);
+                  if (isTextSelectMode) {
+                    setSelectedTextIds(new Set());
+                  }
+                }} 
+                className={`${isTextSelectMode ? 'text-neutral-900' : 'text-neutral-500 hover:text-neutral-900'} text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0`}
+              >
+                <Copy className="w-3.5 h-3.5 text-neutral-400" />
+                <span>{isTextSelectMode ? '取消合并' : '合并复制'}</span>
+              </button>
 
-              {/* Action buttons + Cleanup dropdown */}
-              <div className="flex items-center gap-1.5 rounded-lg bg-white/85 border border-neutral-200/80 shadow-[0_4px_12px_-8px_rgba(0,0,0,0.15)] p-1">
-                <button
-                  type="button"
-                  title="新增备忘"
-                  onClick={() => {
-                    setShowTextNewForm(true);
-                    setEditingText(null);
-                  }}
-                  className="w-8 h-8 rounded-md bg-[#191919] text-white flex items-center justify-center hover:bg-black transition-colors cursor-pointer border-0"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                </button>
+              <div className="h-4 w-px bg-neutral-200 select-none"></div>
 
-                <div className="relative">
-                  <button
-                    type="button"
-                    title="更多操作"
-                    onClick={() => { setShowCleanupMenu(!showCleanupMenu); setShowViewMenu(false); }}
-                    className="w-8 h-8 rounded-md bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-50 flex items-center justify-center transition-all cursor-pointer"
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                  </button>
-                  {showCleanupMenu && (
-                    <>
-                      <div className="fixed inset-0 z-[70] cursor-default" onClick={() => setShowCleanupMenu(false)} />
-                      <div className="absolute right-0 top-full mt-2 z-[90] w-44 rounded-xl border border-neutral-200 bg-white p-1.5 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.3)]">
-                        <button
-                          onClick={() => { openSmartCleanup(); setShowCleanupMenu(false); }}
-                          className="w-full rounded-lg px-3 py-2.5 text-xs font-bold text-left transition-colors text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 flex items-center gap-2.5"
-                        >
-                          <Sparkles className="w-3.5 h-3.5 text-neutral-500" />
-                          <span>智能清理</span>
-                        </button>
-                        <div className="h-px bg-neutral-100 mx-2" />
-                        <button
-                          onClick={() => { openTextCleanupDialog(); setShowCleanupMenu(false); }}
-                          className="w-full rounded-lg px-3 py-2.5 text-xs font-bold text-left transition-colors text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 flex items-center gap-2.5"
-                        >
-                          <Trash2 className="w-3.5 h-3.5 text-neutral-400" />
-                          <span>清理5字内文本</span>
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
+              <button 
+                id="action-btn-clear"
+                onClick={clearUnpinnedTexts} 
+                className="text-red-500 hover:text-red-655 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                <span>清空未置顶</span>
+              </button>
             </div>
           )}
-          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileSelect} />
         </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Sidebar - Image only */}
+        {}
         {activeTab === 'image' && (
           <div
             className={`transition-[width,margin,opacity] duration-300 ease-in-out flex flex-col shrink-0 overflow-hidden ${
@@ -1300,7 +882,9 @@ export default function App() {
                 : 'w-60 ml-6 mt-4 mb-4 opacity-100'
             }`}
           >
+            {}
             <div className="flex-1 bg-white border border-neutral-100/60 rounded-2xl flex flex-col shadow-[0_16px_40px_-6px_rgba(0,0,0,0.06),_0_2px_8px_rgba(0,0,0,0.01)] h-full overflow-hidden">
+              {}
               <div className="h-11 px-4 border-b border-neutral-100/60 flex items-center justify-between bg-white/40">
                 <span className="text-xs font-bold tracking-wider text-neutral-700">截图分类</span>
                 <button 
@@ -1312,7 +896,9 @@ export default function App() {
                 </button>
               </div>
 
+              {}
               <div className="flex-1 overflow-y-auto p-2.5 space-y-1 scrollbar-none">
+                {}
                 <button
                   onClick={() => setSelectedGroupId('all')}
                   className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between ${
@@ -1332,6 +918,7 @@ export default function App() {
                   </span>
                 </button>
 
+                {}
                 <button
                   onClick={() => setSelectedGroupId('default')}
                   className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between ${
@@ -1351,6 +938,7 @@ export default function App() {
                   </span>
                 </button>
 
+                {}
                 {groups.filter(g => g.id !== 'default').map(g => {
                   const count = images.filter(img => img.groupId === g.id).length;
                   const isEditing = editingGroupId === g.id;
@@ -1412,8 +1000,10 @@ export default function App() {
                               <Settings className="w-3.5 h-3.5" />
                             </button>
 
+                            {}
                             {activeGroupMenuId === g.id && (
                               <>
+                                {}
                                 <div 
                                   className="fixed inset-0 z-40 cursor-default" 
                                   onClick={(e) => {
@@ -1438,7 +1028,7 @@ export default function App() {
                                   <button
                                     onClick={() => {
                                       setActiveGroupMenuId(null);
-                                      if (confirm(`确定要删除分类"${g.name}"吗？\n删除后，该分类下的图片将移回"默认分类"，不会被真的删除。`)) {
+                                      if (confirm(`确定要删除分类“${g.name}”吗？\n删除后，该分类下的图片将移回“默认分类”，不会被真的删除。`)) {
                                         handleDeleteGroup(g.id);
                                       }
                                     }}
@@ -1458,6 +1048,7 @@ export default function App() {
                 })}
               </div>
 
+              {}
               <div className="p-3 border-t border-neutral-100/40 bg-white/30">
                 {isCreatingGroup ? (
                    <div className="space-y-2">
@@ -1516,13 +1107,87 @@ export default function App() {
           </div>
         )}
 
-        {/* Main content */}
+        {}
         <main 
           ref={mainScrollRef}
+          onScroll={(e) => {
+            setMainViewportScroll({
+              top: e.currentTarget.scrollTop,
+              left: e.currentTarget.scrollLeft,
+            });
+          }}
           onMouseDown={handleMouseDown}
           className="flex-1 relative p-6 overflow-hidden overflow-y-auto select-none bg-[#F7F7F7] [overflow-anchor:auto]"
         >
-          {/* Drag selection overlay */}
+          {}
+          <div className="absolute top-4 right-6 z-45 select-text">
+            <div 
+              className={`flex items-center bg-white border border-neutral-200/80 shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-350 rounded-full h-10 ${
+                isSearchExpanded ? 'w-64 px-3.5' : 'w-10 justify-center cursor-pointer hover:bg-neutral-50/80'
+              }`}
+              onClick={() => {
+                if (!isSearchExpanded) setIsSearchExpanded(true);
+              }}
+            >
+              <Search className="w-4 h-4 text-neutral-500 shrink-0 select-none cursor-pointer" />
+              {isSearchExpanded && (
+                <input
+                  type="text"
+                  placeholder={activeTab === 'image' ? "搜索图片名称..." : "搜索文本记录..."}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  autoFocus
+                  className="bg-transparent border-0 text-xs w-full pl-2 focus:outline-none placeholder-neutral-400 text-neutral-800 font-medium h-full"
+                  onBlur={() => {
+                    if (!searchQuery) {
+                      setIsSearchExpanded(false);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setIsSearchExpanded(false);
+                      setSearchQuery('');
+                    }
+                  }}
+                />
+              )}
+              {isSearchExpanded && searchQuery && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSearchQuery('');
+                  }}
+                  className="text-neutral-400 hover:text-neutral-600 text-[10px] bg-neutral-100 hover:bg-neutral-200 w-4 h-4 rounded-full flex items-center justify-center shrink-0 ml-1 cursor-pointer border-0"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          {}
+          <AnimatePresence>
+            {activeTab === 'image' && isSidebarCollapsed && (
+              <motion.button
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                style={{
+                  top: mainViewportScroll.top + 16,
+                  left: mainViewportScroll.left + 16,
+                }}
+                onClick={() => setSidebarCollapsed(false)}
+                className="absolute bg-white/80 backdrop-blur-md hover:bg-white p-2.5 rounded-xl shadow-lg border border-neutral-200/50 text-neutral-600 hover:text-[#191919] z-30 transition-all flex items-center gap-1.5 font-bold focus:outline-none select-none cursor-pointer text-xs"
+                title="展开分类"
+              >
+                <Folder className="w-3.5 h-3.5 text-neutral-500" />
+                <span>展开分类</span>
+              </motion.button>
+            )}
+          </AnimatePresence>
+          {}
           {dragStart && dragEnd && (
             <div
               style={{
@@ -1539,24 +1204,6 @@ export default function App() {
               }}
             />
           )}
-
-          {/* Sidebar expand button */}
-          <AnimatePresence>
-            {activeTab === 'image' && isSidebarCollapsed && (
-              <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                onClick={() => setSidebarCollapsed(false)}
-                className="sticky top-4 left-0 z-30 w-fit mb-3 bg-white/80 backdrop-blur-md hover:bg-white p-2.5 rounded-xl shadow-lg border border-neutral-200/50 text-neutral-600 hover:text-[#191919] transition-all flex items-center gap-1.5 font-bold focus:outline-none select-none cursor-pointer text-xs"
-                title="展开分类"
-              >
-                <Folder className="w-3.5 h-3.5 text-neutral-500" />
-                <span>展开分类</span>
-              </motion.button>
-            )}
-          </AnimatePresence>
 
           {activeTab === 'image' ? (
             images.length === 0 ? (
@@ -1578,7 +1225,6 @@ export default function App() {
                       isSelected={selectedIds.has(img.id)}
                       isCopied={copiedId === img.id}
                       isSelectionMode={selectedIds.size > 0}
-                      searchQuery={searchQuery}
                       onClick={(e) => handleImageClick(e, img)}
                       onToggleSelect={handleToggleSelect}
                       onContextMenu={handleContextMenu}
@@ -1592,58 +1238,66 @@ export default function App() {
             )
           ) : (
             <div className="flex flex-col h-full">
+              {}
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (newTextContent.trim()) {
+                    saveTextClip(newTextContent);
+                    setNewTextContent('');
+                  }
+                }}
+                className="flex gap-2 max-w-2xl mx-auto mb-6 w-full shrink-0 select-text"
+              >
+                <input 
+                  type="text" 
+                  placeholder="在此输入新的文本内容，键盘按 Enter 键即可快速保存..."
+                  value={newTextContent}
+                  onChange={(e) => setNewTextContent(e.target.value)}
+                  className="flex-1 bg-white border border-[#D1D1D1] rounded-lg px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#191919]/15 focus:border-[#191919] transition-all shadow-sm"
+                />
+                <button 
+                  type="submit"
+                  className="bg-[#1A1A1A] hover:bg-black text-white text-xs font-bold px-5 py-2.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm shrink-0"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  新建 (Enter)
+                </button>
+              </form>
+
               <div className="flex-1 overflow-y-auto">
                 {texts.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-[50vh] text-[#999999]">
                     <p className="font-sans text-xs tracking-widest text-[#999999] mb-2 uppercase select-none">暂无文本记录</p>
                     <p className="font-sans text-xs select-none">你可以复制任意网页文字在此按 Ctrl+V 自动导入，或在上方输入手动保存</p>
                   </div>
+                ) : filteredTexts.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-[50vh] text-[#999999]">
+                    <p className="font-sans text-xs select-none">没有找到匹配的文本记录</p>
+                  </div>
                 ) : (
-                  <div className="space-y-6">
-                    {processedTexts.groups.map(group => (
-                      <div key={group.key}>
-                        {textGroupMode !== 'none' && group.texts.length > 0 && (
-                          <button
-                            onClick={() => toggleGroupCollapse(group.key)}
-                            className="flex items-center gap-2 mb-3 w-fit"
-                          >
-                            <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${collapsedGroups.has(group.key) ? '-rotate-90' : ''}`} />
-                            <span className="text-xs font-bold text-neutral-500 bg-neutral-100 px-2.5 py-1 rounded-full">
-                              {group.label}
-                            </span>
-                            <span className="text-[10px] text-neutral-400 font-mono">
-                              {group.texts.length} 条
-                            </span>
-                          </button>
-                        )}
-                        {group.texts.length > 0 && !collapsedGroups.has(group.key) && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                            <AnimatePresence>
-                              {group.texts.map(text => (
-                                <TextCard
-                                  key={text.id}
-                                  text={text}
-                                  isSelected={selectedTextIds.has(text.id)}
-                                  isCopied={copiedTextId === text.id}
-                                  isSelectionMode={isTextSelectMode || selectedTextIds.size > 0}
-                                  searchQuery=""
-                                  onClick={(e) => handleTextClick(e, text)}
-                                  onCopy={() => copyTextToClipboard(text)}
-                                  onDelete={() => deleteText(text.id, text.content)}
-                                  onTogglePin={() => handleTogglePinText(text)}
-                                  onToggleSelect={handleToggleSelectText}
-                                  onContextMenu={(e) => handleTextContextMenu(e, text)}
-                                  onEdit={() => {
-                                    setEditingText(text);
-                                    setEditingTextContent(text.content);
-                                  }}
-                                />
-                              ))}
-                            </AnimatePresence>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 content-start">
+                    <AnimatePresence>
+                      {filteredTexts.map(text => (
+                        <TextCard
+                          key={text.id}
+                          text={text}
+                          isSelected={selectedTextIds.has(text.id)}
+                          isCopied={copiedTextId === text.id}
+                          isSelectionMode={isTextSelectMode || selectedTextIds.size > 0}
+                          onClick={(e) => handleTextClick(e, text)}
+                          onCopy={() => copyTextToClipboard(text)}
+                          onDelete={() => deleteText(text.id)}
+                          onTogglePin={() => handleTogglePinText(text)}
+                          onToggleSelect={handleToggleSelectText}
+                          onContextMenu={(e) => handleTextContextMenu(e, text)}
+                          onEdit={() => {
+                            setEditingText(text);
+                            setEditingTextContent(text.content);
+                          }}
+                        />
+                      ))}
+                    </AnimatePresence>
                   </div>
                 )}
               </div>
@@ -1652,120 +1306,160 @@ export default function App() {
         </main>
       </div>
 
-      {/* Image selection toolbar */}
+      {}
       <AnimatePresence>
         {activeTab === 'image' && selectedIds.size > 0 && (
           <motion.div
-            initial={{ y: 80, opacity: 0 }}
+            initial={{ y: 100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 80, opacity: 0 }}
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 max-w-[calc(100vw-2rem)]"
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#191919]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_24px_50px_rgba(0,0,0,0.3)] rounded-2xl p-2 flex items-center gap-2 z-40 select-none font-sans text-xs"
           >
-            <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-900/95 backdrop-blur-xl border border-neutral-700/80 shadow-2xl rounded-full whitespace-nowrap">
-              <span className="px-3 text-xs font-semibold text-white shrink-0">
-                已选 {selectedIds.size} 张
-              </span>
-              <div className="w-px h-5 bg-neutral-700 shrink-0" />
+            <span className="pl-3.5 pr-2.5 text-xs font-bold text-white tracking-wide font-sans">
+              已选中 {selectedIds.size} 张图片
+            </span>
+            <div className="w-px h-4 bg-neutral-800 mx-1.5" />
+            
+            <button
+              onClick={toggleSelectAll}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
+            >
+              {selectedIds.size === filteredImages.length ? '取消全选' : '全选分类'}
+            </button>
+            <button
+              onClick={copyMultiple}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-300 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5 text-neutral-450" />
+              <span>一键复制</span>
+            </button>
+
+            {}
+            <div className="relative">
               <button
-                onClick={toggleSelectAll}
-                className="px-3 py-1.5 text-xs font-semibold text-neutral-300 hover:text-white hover:bg-neutral-800 rounded-full transition-colors cursor-pointer shrink-0"
+                onClick={() => setIsBatchMoveMenuOpen(!isBatchMoveMenuOpen)}
+                className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer ${
+                  isBatchMoveMenuOpen 
+                    ? 'bg-neutral-800 text-white' 
+                    : 'text-neutral-300 hover:text-white hover:bg-neutral-800/80'
+                }`}
               >
-                {selectedIds.size === filteredImages.length ? '取消全选' : '全选'}
+                <Folder className="w-3.5 h-3.5 text-neutral-450" />
+                <span>移至分类</span>
+                <ChevronDown className="w-3.5 h-3.5 text-neutral-450 transition-transform duration-200" style={{ transform: isBatchMoveMenuOpen ? 'rotate(180deg)' : 'none' }} />
               </button>
-              <button
-                onClick={copyMultiple}
-                className="px-3 py-1.5 text-xs font-semibold text-neutral-300 hover:text-white hover:bg-neutral-800 rounded-full transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                复制
-              </button>
-              <div className="relative shrink-0">
-                <button
-                  onClick={() => setIsBatchMoveMenuOpen(!isBatchMoveMenuOpen)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-full transition-colors flex items-center gap-1.5 cursor-pointer ${
-                    isBatchMoveMenuOpen
-                      ? 'bg-neutral-800 text-white'
-                      : 'text-neutral-300 hover:text-white hover:bg-neutral-800'
-                  }`}
-                >
-                  <Folder className="w-3.5 h-3.5" />
-                  移动
-                  <ChevronDown className="w-3.5 h-3.5" style={{ transform: isBatchMoveMenuOpen ? 'rotate(180deg)' : 'none' }} />
-                </button>
-                {isBatchMoveMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40 cursor-default" onClick={() => setIsBatchMoveMenuOpen(false)} />
-                    <div className="absolute bottom-full mb-2 left-0 bg-neutral-900 border border-neutral-700 shadow-2xl rounded-xl py-1 min-w-[150px] z-50 flex flex-col text-neutral-300">
-                      <button
-                        onClick={() => { handleMoveMultipleImages('default'); setIsBatchMoveMenuOpen(false); }}
-                        className="w-full text-left px-3 py-2 hover:bg-neutral-800 hover:text-white text-xs font-semibold"
-                      >
-                        默认分类
-                      </button>
-                      {groups.filter(g => g.id !== 'default').map(group => (
-                        <button
-                          key={group.id}
-                          onClick={() => { handleMoveMultipleImages(group.id); setIsBatchMoveMenuOpen(false); }}
-                          className="w-full text-left px-3 py-2 hover:bg-neutral-800 hover:text-white text-xs font-semibold truncate"
-                        >
-                          {group.name}
-                        </button>
-                      ))}
+
+              {isBatchMoveMenuOpen && (
+                <>
+                  <div 
+                    className="fixed inset-0 z-40 cursor-default" 
+                    onClick={() => setIsBatchMoveMenuOpen(false)} 
+                  />
+                  <div className="absolute bottom-full mb-3 left-0 bg-[#222222]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_12px_32px_rgba(0,0,0,0.4)] rounded-xl py-1.5 min-w-[170px] z-50 flex flex-col font-sans text-neutral-300 select-none">
+                    <div className="px-3.5 py-2 text-[10px] font-bold text-neutral-500 border-b border-neutral-800/60 tracking-wider">
+                      选择目标分类
                     </div>
-                  </>
-                )}
-              </div>
-              <button
-                onClick={deleteSelected}
-                className="px-3 py-1.5 text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-950/50 rounded-full transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                删除
-              </button>
+                    
+                    {}
+                    <button
+                      onClick={() => {
+                        handleMoveMultipleImages('default');
+                        setIsBatchMoveMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 hover:bg-neutral-800/60 hover:text-white flex items-center gap-2 transition-colors font-bold"
+                    >
+                      <Folder className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                      <span>默认分类</span>
+                    </button>
+
+                    {}
+                    {groups.filter(g => g.id !== 'default').map(group => (
+                      <button
+                        key={group.id}
+                        onClick={() => {
+                          handleMoveMultipleImages(group.id);
+                          setIsBatchMoveMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 hover:bg-neutral-800/60 hover:text-white flex items-center gap-2 transition-colors font-bold truncate"
+                      >
+                        <Folder className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                        <span className="truncate">{group.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
+
+            <button
+              onClick={deleteSelected}
+              className="px-3.5 py-2 text-xs font-bold text-red-400 hover:text-red-350 hover:bg-red-950/40 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>删除选中</span>
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Text selection toolbar */}
+      {}
       <AnimatePresence>
         {activeTab === 'text' && (isTextSelectMode || selectedTextIds.size > 0) && (
           <motion.div
-            initial={{ y: 80, opacity: 0 }}
+            initial={{ y: 100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 80, opacity: 0 }}
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 max-w-[calc(100vw-2rem)]"
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#191919]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_24px_50px_rgba(0,0,0,0.3)] rounded-2xl p-2 flex items-center gap-1.5 z-40 select-none font-sans text-xs"
           >
-            <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-900/95 backdrop-blur-xl border border-neutral-700/80 shadow-2xl rounded-full whitespace-nowrap">
-              <span className="px-3 text-xs font-semibold text-white shrink-0">
-                已选 {selectedTextIds.size} 条
-              </span>
-              <div className="w-px h-5 bg-neutral-700 shrink-0" />
-              <button
-                onClick={() => {
-                  if (selectedTextIds.size === texts.length) {
-                    setSelectedTextIds(new Set());
-                  } else {
-                    setSelectedTextIds(new Set(texts.map(t => t.id)));
-                  }
-                }}
-                className="px-3 py-1.5 text-xs font-semibold text-neutral-300 hover:text-white hover:bg-neutral-800 rounded-full transition-colors cursor-pointer shrink-0"
-              >
-                {selectedTextIds.size === texts.length ? '取消全选' : '全选'}
-              </button>
-              <button
-                onClick={deleteSelectedTexts}
-                className="px-3 py-1.5 text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-950/50 rounded-full transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                删除
-              </button>
-            </div>
+            <span className="pl-3.5 pr-2.5 text-xs font-bold text-white tracking-wide font-sans">
+              已选中 {selectedTextIds.size} 条文本
+            </span>
+            <div className="w-px h-4 bg-neutral-800 mx-1.5" />
+            <button
+              onClick={() => {
+                if (selectedTextIds.size === texts.length) {
+                  setSelectedTextIds(new Set());
+                } else {
+                  setSelectedTextIds(new Set(texts.map(t => t.id)));
+                }
+              }}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
+            >
+              {selectedTextIds.size === texts.length ? '取消全选' : '全选所有'}
+            </button>
+            <button
+              onClick={() => {
+                copySelectedTexts();
+                setIsTextSelectMode(false);
+                setSelectedTextIds(new Set());
+              }}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-300 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5 text-neutral-450" />
+              <span>合并复制</span>
+            </button>
+            <button
+              onClick={deleteSelectedTexts}
+              className="px-3.5 py-2 text-xs font-bold text-red-400 hover:text-red-350 hover:bg-red-950/40 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>删除选中</span>
+            </button>
+            <div className="w-px h-4 bg-neutral-800 mx-1.5" />
+            <button
+              onClick={() => {
+                setIsTextSelectMode(false);
+                setSelectedTextIds(new Set());
+              }}
+              className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
+            >
+              退出
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Image context menu */}
+      {}
       {contextMenu && (
         <ContextMenu
           position={{ x: contextMenu.x, y: contextMenu.y }}
@@ -1806,13 +1500,14 @@ export default function App() {
         />
       )}
 
-      {/* Text context menu */}
+      {}
       {textContextMenu && (
         <div
           style={{ top: `${textContextMenu.y}px`, left: `${textContextMenu.x}px` }}
           className="fixed z-50 bg-[#222222]/95 backdrop-blur-xl border border-neutral-800 shadow-2xl rounded-xl py-1.5 w-48 text-xs font-sans text-neutral-300 select-none animate-in fade-in zoom-in-95 duration-100"
           onContextMenu={(e) => e.preventDefault()}
         >
+          {}
           <div 
             className="fixed inset-0 z-[-1] cursor-default" 
             onClick={() => setTextContextMenu(null)} 
@@ -1832,19 +1527,6 @@ export default function App() {
             <Copy className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
             <span>复制文本</span>
           </button>
-
-          {selectedTextIds.size > 1 && selectedTextIds.has(textContextMenu.text.id) && (
-            <button
-              onClick={() => {
-                copySelectedTexts();
-                setTextContextMenu(null);
-              }}
-              className="w-full px-3.5 py-2.5 hover:bg-neutral-800/80 hover:text-white cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
-            >
-              <Copy className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
-              <span>合并复制 {selectedTextIds.size} 条</span>
-            </button>
-          )}
 
           <button
             onClick={() => {
@@ -1922,7 +1604,7 @@ export default function App() {
 
           <button
             onClick={() => {
-              deleteText(textContextMenu.text.id, textContextMenu.text.content);
+              deleteText(textContextMenu.text.id);
               setTextContextMenu(null);
             }}
             className="w-full px-3.5 py-2.5 hover:bg-red-950/40 text-red-450 hover:text-red-300 cursor-pointer flex items-center gap-2 text-left bg-transparent border-0 font-bold transition-colors"
@@ -1933,300 +1615,58 @@ export default function App() {
         </div>
       )}
 
-      {/* Text Cleanup Dialog */}
+      {}
       <AnimatePresence>
-        {textCleanupDialog && (
-          <div className="fixed inset-0 bg-black/45 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        {editingText && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
             <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.94, y: 8 }}
-              transition={{ type: 'spring', damping: 24, stiffness: 280 }}
-              className="w-full max-w-xl max-h-[82vh] overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-2xl flex flex-col"
+              initial={{ opacity: 0, scale: 0.93 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.93 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 280 }}
+              className="bg-white border border-neutral-200/80 shadow-2xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh] text-[#1a1a1a] font-sans"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-bold text-neutral-900">{textCleanupDialog.title}</div>
-                  <div className="mt-1 text-xs text-neutral-500">默认全选，取消勾选可保留对应剪贴。</div>
-                </div>
-                <span className="text-xs font-mono text-neutral-500 bg-neutral-100 rounded-full px-2 py-1">
-                  {textCleanupDialog.selectedIds.size}/{textCleanupDialog.clips.length}
+              {}
+              <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between bg-neutral-50/50">
+                <span className="text-sm font-bold text-neutral-800">编辑文本剪贴内容</span>
+                <span className="text-xs font-mono text-neutral-400 capitalize bg-neutral-105 px-2 py-0.5 rounded-md">
+                  {editingTextContent.length} 个字符
                 </span>
               </div>
 
-              <div className="px-5 py-3 border-b border-neutral-100 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTextCleanupDialog(prev => prev && ({
-                    ...prev,
-                    selectedIds: new Set(prev.clips.map(clip => clip.id)),
-                  }))}
-                  className="px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-bold"
-                >
-                  全选
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTextCleanupDialog(prev => prev && ({ ...prev, selectedIds: new Set() }))}
-                  className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs font-bold"
-                >
-                  全不选
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {textCleanupDialog.clips.map(clip => {
-                  const checked = textCleanupDialog.selectedIds.has(clip.id);
-                  return (
-                    <label
-                      key={clip.id}
-                      className={`flex gap-3 rounded-xl border p-3 cursor-pointer transition-all ${
-                        checked
-                          ? 'border-neutral-900 bg-neutral-50'
-                          : 'border-neutral-200 hover:border-neutral-300 bg-white'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          setTextCleanupDialog(prev => {
-                            if (!prev) return prev;
-                            const next = new Set(prev.selectedIds);
-                            if (next.has(clip.id)) next.delete(clip.id);
-                            else next.add(clip.id);
-                            return { ...prev, selectedIds: next };
-                          });
-                        }}
-                        className="mt-0.5 h-4 w-4 accent-neutral-900 shrink-0"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="font-mono text-sm text-neutral-900 break-all whitespace-pre-wrap select-text">
-                          {clip.content}
-                        </div>
-                        <div className="mt-1 text-[11px] text-neutral-400 font-mono">
-                          {getClipLength(clip)} 字 / {new Date(clip.createdAt).toLocaleString()}
-                        </div>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-
-              <div className="px-5 py-3 border-t border-neutral-100 bg-neutral-50 flex items-center justify-end gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setTextCleanupDialog(null)}
-                  className="px-4 py-2 rounded-xl bg-white border border-neutral-200 text-xs font-bold text-neutral-600 hover:text-neutral-950"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmTextCleanup}
-                  className="px-5 py-2 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                  disabled={textCleanupDialog.selectedIds.size === 0}
-                >
-                  确认清空
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Smart Cleanup Dialog */}
-      <AnimatePresence>
-        {smartCleanupDialog && (
-          <div className="fixed inset-0 bg-black/45 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.94, y: 8 }}
-              transition={{ type: 'spring', damping: 24, stiffness: 280 }}
-              className="w-full max-w-xl max-h-[85vh] overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-2xl flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-bold text-neutral-900">智能清理</div>
-                  <div className="mt-1 text-xs text-neutral-500">检测到 {smartCleanupDialog.clips.length} 条可能无用的文本剪贴，默认全选，取消勾选可保留对应剪贴。</div>
-                </div>
-                <div className="flex flex-wrap gap-1 justify-end max-w-[50%]">
-                  {smartCleanupDialog.config.rules.filter(r => r.enabled).slice(0, 3).map(rule => (
-                    <span key={rule.id} className="text-[10px] font-bold text-neutral-500 bg-neutral-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">{rule.name}</span>
-                  ))}
-                  {smartCleanupDialog.config.rules.filter(r => r.enabled).length > 3 && (
-                    <span className="text-[10px] font-bold text-neutral-400 px-1.5 py-0.5">+{smartCleanupDialog.config.rules.filter(r => r.enabled).length - 3}</span>
-                  )}
-                </div>
-              </div>
-
-              <div className="px-5 py-3 border-b border-neutral-100 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSmartCleanupDialog(prev => prev && ({
-                    ...prev,
-                    selectedIds: new Set(prev.clips.map(clip => clip.id)),
-                  }))}
-                  className="px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-bold"
-                >
-                  全选
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSmartCleanupDialog(prev => prev && ({ ...prev, selectedIds: new Set() }))}
-                  className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs font-bold"
-                >
-                  全不选
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {smartCleanupDialog.clips.map(clip => {
-                  const checked = smartCleanupDialog.selectedIds.has(clip.id);
-                  return (
-                    <label
-                      key={clip.id}
-                      className={`flex gap-3 rounded-xl border p-3 cursor-pointer transition-all ${
-                        checked
-                          ? 'border-neutral-900 bg-neutral-50'
-                          : 'border-neutral-200 hover:border-neutral-300 bg-white'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          setSmartCleanupDialog(prev => {
-                            if (!prev) return prev;
-                            const next = new Set(prev.selectedIds);
-                            if (next.has(clip.id)) next.delete(clip.id);
-                            else next.add(clip.id);
-                            return { ...prev, selectedIds: next };
-                          });
-                        }}
-                        className="mt-0.5 h-4 w-4 accent-neutral-900 shrink-0"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="font-mono text-sm text-neutral-900 break-all whitespace-pre-wrap select-text">
-                          {clip.content}
-                        </div>
-                        <div className="mt-1 text-[11px] text-neutral-400 font-mono">
-                          {getClipLength(clip)} 字 / {new Date(clip.createdAt).toLocaleString()}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => excludeFromSmartCleanup(clip.content.trim())}
-                        className="shrink-0 p-1 rounded-lg text-neutral-300 hover:text-neutral-600 hover:bg-neutral-100 transition-all self-start"
-                        title="不再提示此内容"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
-                          <circle cx="12" cy="12" r="10" />
-                          <line x1="15" y1="9" x2="9" y2="15" />
-                          <line x1="9" y1="9" x2="15" y2="15" />
-                        </svg>
-                      </button>
-                    </label>
-                  );
-                })}
-              </div>
-
-              <div className="px-5 py-3 border-t border-neutral-100 bg-neutral-50 flex items-center justify-end gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setSmartCleanupDialog(null)}
-                  className="px-4 py-2 rounded-xl bg-white border border-neutral-200 text-xs font-bold text-neutral-600 hover:text-neutral-950"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmSmartCleanup}
-                  className="px-5 py-2 rounded-xl bg-neutral-900 text-white text-xs font-bold hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed"
-                  disabled={smartCleanupDialog.selectedIds.size === 0}
-                >
-                  确认清理 {smartCleanupDialog.selectedIds.size} 条
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* New/Edit text form */}
-      <AnimatePresence>
-        {(showTextNewForm || editingText) && (
-          <div className="fixed inset-x-0 bottom-0 z-[60] pointer-events-none">
-            <motion.div
-              initial={{ y: '105%', opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: '105%', opacity: 0 }}
-              transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-              className="pointer-events-auto mx-auto mb-4 w-[min(1120px,calc(100vw-32px))] max-h-[74vh] overflow-hidden rounded-[28px] border border-neutral-200 bg-white shadow-[0_28px_90px_-32px_rgba(0,0,0,0.55)] flex flex-col text-[#1a1a1a] font-sans"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-6 py-4 border-b border-neutral-100 flex items-center justify-between bg-white">
-                <div>
-                  <div className="text-sm font-bold text-neutral-900">
-                    {editingText ? '编辑文本剪贴' : '临时备忘'}
-                  </div>
-                  <div className="mt-1 text-xs text-neutral-500">
-                    {editingText ? '修改后保存到当前剪贴记录。' : '适合临时记录，保存后进入文本剪贴板。'}
-                  </div>
-                </div>
-                <span className="text-xs font-mono text-neutral-500 bg-neutral-100 rounded-full px-2.5 py-1">
-                  {(editingText ? editingTextContent : newTextContent).length} 字符
-                </span>
-              </div>
-
-              <div className="p-5 flex-1 overflow-y-auto bg-neutral-50/55">
+              {}
+              <div className="p-5 flex-1 overflow-y-auto">
                 <textarea
-                  className="w-full min-h-[260px] h-[42vh] max-h-[460px] p-5 bg-white border border-neutral-200 hover:border-neutral-300 focus:bg-white rounded-2xl focus:outline-none focus:ring-4 focus:ring-[#191919]/5 focus:border-[#191919] text-sm font-mono text-[#222222] leading-relaxed resize-none shadow-inner transition-all"
-                  value={editingText ? editingTextContent : newTextContent}
-                  onChange={(e) => {
-                    if (editingText) setEditingTextContent(e.target.value);
-                    else setNewTextContent(e.target.value);
-                  }}
-                  placeholder={editingText ? '请输入剪贴内容...' : '写点临时备忘，保存后会进入文本剪贴板...'}
+                  className="w-full min-h-[220px] max-h-[380px] p-4 bg-neutral-50 border border-neutral-250 hover:border-neutral-350 focus:bg-white rounded-xl focus:outline-none focus:ring-4 focus:ring-[#191919]/5 focus:border-[#191919] text-xs font-mono text-[#222222] leading-relaxed resize-y shadow-inner transition-all-300"
+                  value={editingTextContent}
+                  onChange={(e) => setEditingTextContent(e.target.value)}
+                  placeholder="请输入剪贴内容..."
                   autoFocus
                 />
               </div>
 
-              <div className="px-6 py-4 border-t border-neutral-100 bg-white flex items-center justify-between gap-3">
-                <div className="text-xs text-neutral-400 font-medium">
-                  不会点击背景关闭，避免误丢内容。
-                </div>
-                <div className="flex items-center gap-2.5">
+              {}
+              <div className="px-5 py-3 border-t border-neutral-100 bg-neutral-50/50 flex items-center justify-end gap-2.5">
                 <button
-                  onClick={() => {
-                    setEditingText(null);
-                    setShowTextNewForm(false);
-                  }}
-                  className="px-4 py-2.5 text-xs font-bold text-neutral-600 hover:text-neutral-900 bg-neutral-100 hover:bg-neutral-200/80 rounded-full transition-all cursor-pointer"
+                  onClick={() => setEditingText(null)}
+                  className="px-4 py-2 text-xs font-bold text-neutral-600 hover:text-neutral-900 bg-neutral-100 hover:bg-neutral-200/80 rounded-xl transition-all cursor-pointer"
                 >
-                  收起
+                  取消
                 </button>
                 <button
-                  onClick={() => {
-                    if (editingText) handleSaveEditText();
-                    else saveTextClip(newTextContent);
-                  }}
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-full transition-all shadow-md cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
-                  disabled={editingText ? !editingTextContent.trim() : !newTextContent.trim()}
+                  onClick={handleSaveEditText}
+                  className="px-5 py-2 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-xl transition-all shadow-md cursor-pointer active:scale-95"
                 >
-                  {editingText ? '保存修改' : '保存备忘'}
+                  保存修改
                 </button>
-                </div>
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
 
-      {/* Toast */}
+      {}
       <AnimatePresence>
         {toast.visible && (
           <motion.div
@@ -2240,28 +1680,27 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Footer */}
-      <footer className="h-8 shrink-0 border-t border-neutral-200/70 bg-white/80 px-4 flex items-center justify-between font-mono text-[11px] text-neutral-500 z-10 select-none">
-        <div className="flex items-center gap-2 font-sans font-bold text-neutral-700">
-          <span className="opencut-mark opencut-mark-mini" aria-hidden="true">*</span>
-          <span>OpenCut</span>
-        </div>
-        <div className="flex gap-4 pr-1">
+      {}
+      <footer className="h-8 shrink-0 border-t border-[#D1D1D1] bg-[#F9F9F9] px-4 flex items-center justify-between font-mono text-xs text-[#666666] tracking-widest z-10 select-none">
+        <div>OpenCut 本地剪贴板</div>
+        <div className="flex gap-6 pr-1">
           {activeTab === 'image' ? (
             <>
-              <span>⌘/Ctrl+V 导入</span>
-              <span>⌘/Ctrl+A 全选</span>
-              <span>⌘/Ctrl+C 复制</span>
-              <span>Delete 删除</span>
-              <span>Esc 取消</span>
+              <span>[选择] 勾选圆圈多选</span>
+              <span>[复制] 单击卡片图片复制</span>
+              <span>[命名] 双击标题重命名</span>
+              <span>[右键] 更多操作菜单</span>
+              <span>[粘贴] Ctrl+V 快捷导入</span>
+              <span>[框选] 鼠标拖拽批量选中</span>
             </>
           ) : (
             <>
-              <span>⌘/Ctrl+V 导入</span>
-              <span>⌘/Ctrl+A 全选</span>
-              <span>右键 合并复制</span>
-              <span>Delete 删除</span>
-              <span>Esc 取消</span>
+              <span>[选择] 勾选圆圈多选</span>
+              <span>[复制] 单击内容快速复制</span>
+              <span>[保存] 输入框 Enter 快捷保存</span>
+              <span>[粘贴] Ctrl+V 快捷导入文本</span>
+              <span>[删除] Delete 键删除选中</span>
+              <span>[框选] 鼠标拖拽批量选中</span>
             </>
           )}
         </div>

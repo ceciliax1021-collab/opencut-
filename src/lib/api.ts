@@ -7,12 +7,18 @@ export interface ImagesResponse {
   images: UploadedImage[];
 }
 
+export function isDesktopApp(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** Only resolve local filesystem paths — never remote URLs. */
 export function resolveImageUrl(path: string): string {
   if (!path) return path;
   if (path.startsWith('asset://') || path.startsWith('data:')) {
     return path;
   }
   if (path.startsWith('http://') || path.startsWith('https://')) {
+    console.warn('[OpenCut] Blocked remote image URL — offline-only mode');
     return '';
   }
   return convertFileSrc(path);
@@ -93,12 +99,9 @@ export async function copyTextToClipboard(content: string): Promise<void> {
   await invoke('copy_text_to_clipboard', { content });
 }
 
+/** Open image with system viewer — local files only, validated by Rust backend. */
 export async function openImagePath(path: string): Promise<void> {
   await invoke('open_local_image', { path });
-}
-
-export async function quitApp(): Promise<void> {
-  await invoke('quit_app');
 }
 
 export function onClipUpdated(callback: (kind: 'image' | 'text') => void): Promise<UnlistenFn> {

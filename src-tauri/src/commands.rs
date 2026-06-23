@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use arboard::{Clipboard, ImageData};
@@ -6,16 +5,11 @@ use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::models::{Group, ImagesResponse, TextClip, UploadedImage};
-use crate::smart_cleanup::SmartCleanupConfig;
 use crate::storage::Storage;
 
 pub struct AppState {
     pub storage: Storage,
     pub last_clipboard_hash: Mutex<Option<u64>>,
-}
-
-fn smart_cleanup_path(state: &AppState) -> PathBuf {
-    state.storage.root().join("smart_cleanup.json")
 }
 
 #[tauri::command]
@@ -161,7 +155,36 @@ pub fn get_texts(state: State<'_, Arc<AppState>>) -> Result<Vec<TextClip>, Strin
 
 #[tauri::command]
 pub fn save_text(state: State<'_, Arc<AppState>>, content: String) -> Result<TextClip, String> {
-    save_text_internal(&state, content)
+    if content.trim().is_empty() {
+        return Err("Content must be non-empty".into());
+    }
+    let mut texts = state.storage.read_texts();
+    if let Some(idx) = texts.iter().position(|t| t.content == content) {
+        let mut existing = texts.remove(idx);
+        existing.created_at = now_ms();
+        texts.insert(0, existing.clone());
+        state.storage.write_texts(&texts)?;
+        return Ok(existing);
+    }
+
+    let clip = TextClip {
+        id: format!("{:x}", md5::compute(format!("{}-{}", content, now_ms()))),
+        content,
+        created_at: now_ms(),
+        is_pinned: false,
+    };
+    texts.insert(0, clip.clone());
+
+    if texts.len() > 100 {
+        let pinned: Vec<_> = texts.iter().filter(|t| t.is_pinned).cloned().collect();
+        let unpinned: Vec<_> = texts.iter().filter(|t| !t.is_pinned).cloned().collect();
+        let keep = 100usize.saturating_sub(pinned.len());
+        texts = pinned;
+        texts.extend(unpinned.into_iter().take(keep));
+    }
+
+    state.storage.write_texts(&texts)?;
+    Ok(clip)
 }
 
 #[tauri::command]
@@ -258,56 +281,6 @@ pub fn open_local_image(state: State<'_, Arc<AppState>>, path: String) -> Result
     open::that(&resolved).map_err(|e| e.to_string())
 }
 
-// --- Smart Cleanup Commands ---
-
-#[tauri::command]
-pub fn get_smart_cleanup_config(state: State<'_, Arc<AppState>>) -> Result<SmartCleanupConfig, String> {
-    let path = smart_cleanup_path(&state);
-    Ok(SmartCleanupConfig::load(&path))
-}
-
-#[tauri::command]
-pub fn save_smart_cleanup_config(state: State<'_, Arc<AppState>>, config: SmartCleanupConfig) -> Result<(), String> {
-    let path = smart_cleanup_path(&state);
-    config.save(&path)
-}
-
-#[tauri::command]
-pub fn check_smart_cleanup(state: State<'_, Arc<AppState>>) -> Result<Vec<TextClip>, String> {
-    let path = smart_cleanup_path(&state);
-    let config = SmartCleanupConfig::load(&path);
-    let texts = state.storage.read_texts();
-    
-    let matched_ids: std::collections::HashSet<String> = texts.iter()
-        .flat_map(|t| {
-            let matched_rules = config.matches_any_rule(&t.content);
-            if matched_rules.is_empty() { None } else { Some(t.id.clone()) }
-        })
-        .collect();
-    
-    let history_matched: Vec<String> = texts.iter()
-        .filter(|t| config.deleted_content_history.contains(&t.content.trim().to_string()))
-        .map(|t| t.id.clone())
-        .collect();
-    
-    let all_matched: std::collections::HashSet<String> = matched_ids.into_iter().chain(history_matched).collect();
-    
-    Ok(texts.into_iter().filter(|t| all_matched.contains(&t.id)).collect())
-}
-
-#[tauri::command]
-pub fn add_deleted_content_to_cleanup(state: State<'_, Arc<AppState>>, content: String) -> Result<(), String> {
-    let path = smart_cleanup_path(&state);
-    let mut config = SmartCleanupConfig::load(&path);
-    let trimmed = content.trim().to_string();
-    if !trimmed.is_empty() && !config.deleted_content_history.contains(&trimmed) {
-        config.deleted_content_history.push(trimmed);
-        config.save(&path)
-    } else {
-        Ok(())
-    }
-}
-
 pub fn start_clipboard_watcher(app: AppHandle, state: Arc<AppState>) {
     std::thread::spawn(move || {
         let mut clipboard = match Clipboard::new() {
@@ -346,7 +319,12 @@ pub fn start_clipboard_watcher(app: AppHandle, state: Arc<AppState>) {
                 if text.trim().is_empty() {
                     continue;
                 }
-                if state.storage.has_text_content(&text) {
+                if state
+                    .storage
+                    .read_texts()
+                    .iter()
+                    .any(|t| t.content == text)
+                {
                     continue;
                 }
                 match save_text_internal(&state, text) {
@@ -361,38 +339,28 @@ pub fn start_clipboard_watcher(app: AppHandle, state: Arc<AppState>) {
 }
 
 fn save_text_internal(state: &AppState, content: String) -> Result<TextClip, String> {
-    let normalized = content.trim().to_string();
-    if normalized.is_empty() {
-        return Err("Content must be non-empty".into());
-    }
-
     let mut texts = state.storage.read_texts();
-    if let Some(idx) = texts.iter().position(|t| t.content.trim() == normalized) {
+    if let Some(idx) = texts.iter().position(|t| t.content == content) {
         let mut existing = texts.remove(idx);
-        existing.content = normalized.clone();
         existing.created_at = now_ms();
         texts.insert(0, existing.clone());
         state.storage.write_texts(&texts)?;
         return Ok(existing);
     }
-
     let clip = TextClip {
-        id: format!("{:x}", md5::compute(format!("{normalized}-{}", now_ms()))),
-        content: normalized,
+        id: format!("{:x}", md5::compute(format!("{}-{}", content, now_ms()))),
+        content,
         created_at: now_ms(),
         is_pinned: false,
     };
     texts.insert(0, clip.clone());
-
-    // Maximum 1000 texts
-    if texts.len() > 1000 {
+    if texts.len() > 100 {
         let pinned: Vec<_> = texts.iter().filter(|t| t.is_pinned).cloned().collect();
         let unpinned: Vec<_> = texts.iter().filter(|t| !t.is_pinned).cloned().collect();
-        let keep = 1000usize.saturating_sub(pinned.len());
+        let keep = 100usize.saturating_sub(pinned.len());
         texts = pinned;
         texts.extend(unpinned.into_iter().take(keep));
     }
-
     state.storage.write_texts(&texts)?;
     Ok(clip)
 }

@@ -1,8 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { TextClip } from '../types';
 import { Copy, Trash2, Pin, PinOff, Check, Edit2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { HighlightMatch } from './HighlightMatch';
 
 interface TextCardProps {
   key?: React.Key;
@@ -10,7 +9,6 @@ interface TextCardProps {
   isSelected: boolean;
   isCopied: boolean;
   isSelectionMode?: boolean;
-  searchQuery?: string;
   onClick: (e: React.MouseEvent) => void;
   onCopy: () => void;
   onDelete: () => void;
@@ -20,34 +18,11 @@ interface TextCardProps {
   onEdit?: () => void;
 }
 
-function getRelativeTime(timestamp: number): string {
-  const now = Date.now();
-  const diff = now - timestamp;
-  const seconds = Math.floor(diff / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days === 0) {
-    if (hours === 0) {
-      if (minutes === 0) return '刚刚';
-      return `${minutes} 分钟前`;
-    }
-    return `${hours} 小时前`;
-  }
-  if (days === 1) return '昨天';
-  if (days <= 3) return `${days} 天前`;
-  if (days <= 7) return `${days} 天前`;
-  if (days <= 30) return `${Math.floor(days / 7)} 周前`;
-  return new Date(timestamp).toLocaleDateString();
-}
-
 export function TextCard({
   text,
   isSelected,
   isCopied,
   isSelectionMode,
-  searchQuery = '',
   onClick,
   onCopy,
   onDelete,
@@ -56,17 +31,23 @@ export function TextCard({
   onContextMenu,
   onEdit,
 }: TextCardProps) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  const formatDate = (timestamp: number) => {
+    return new Date(timestamp).toLocaleString();
+  };
+
   return (
     <motion.div
-      initial={false}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.12 }}
-      className={`text-card-item group relative bg-white border cursor-pointer flex flex-col isolate ${
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.18 }}
+      className={`text-card-item group relative bg-white border cursor-pointer flex flex-col justify-between ${
         isSelected
-          ? 'border-2 border-[#191919] rounded-xl p-3.5 shadow-sm ring-4 ring-[#191919]/10 z-20 bg-white'
-          : 'border-neutral-200 rounded-xl p-3.5 hover:border-[#191919]/35 hover:shadow-[0_14px_30px_-18px_rgba(0,0,0,0.45)] z-0 hover:z-20 bg-white/95'
-      } transition-all duration-200`}
+          ? 'border-2 border-[#191919] rounded-lg p-3 shadow-sm ring-4 ring-[#191919]/10'
+          : 'border-[#D1D1D1] rounded-lg p-3 hover:border-[#191919]/50 hover:ring-4 hover:ring-[#191919]/5 hover:scale-[1.01] hover:shadow-md z-0 hover:z-10'
+      } transition-all duration-200 min-h-[140px] max-h-[220px]`}
       data-id={text.id}
       onClick={onClick}
       onDoubleClick={(e) => {
@@ -74,118 +55,119 @@ export function TextCard({
         onCopy();
       }}
       onContextMenu={onContextMenu}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
-      {/* Pin indicator */}
-      {text.isPinned && (
-        <div className="absolute top-3 left-3 z-10">
-          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-600 font-sans text-[10px] font-bold border border-amber-200/50">
-            <Pin className="w-2.5 h-2.5 fill-amber-500" />
-            置顶
+      {}
+      <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-[#F0F0F0] shrink-0 select-none">
+        <div className="flex items-center gap-1.5">
+          {text.isPinned && (
+            <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-sans text-xs font-semibold border border-amber-200/50">
+              <Pin className="w-3 h-3 fill-amber-500" />
+              置顶
+            </span>
+          )}
+          <span className="text-xs text-[#999999] font-mono">
+            {formatDate(text.createdAt)}
           </span>
         </div>
-      )}
-
-      {/* Selection checkbox */}
-      {onToggleSelect && (
-        <button
-          title={isSelected ? '取消选中' : '选中'}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSelect(text);
-          }}
-          className={`absolute top-3 right-3 w-5 h-5 rounded-md flex items-center justify-center transition-all z-10 ${
-            isSelected
-              ? 'bg-[#191919] text-white'
-              : 'bg-white/80 border border-neutral-300 text-transparent hover:text-neutral-600 hover:border-neutral-400 opacity-0 group-hover:opacity-100'
-          }`}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="w-3.5 h-3.5">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        </button>
-      )}
-
-      {/* Content */}
-      <div className="text-card-content flex-1 overflow-hidden overflow-y-auto mb-3 mt-1 text-sm font-mono text-[#222222] text-left leading-relaxed break-all whitespace-pre-wrap pr-1 scrollbar-thin cursor-text select-text min-h-[60px] max-h-[160px]">
-        <HighlightMatch text={text.content} query={searchQuery} />
+        <div className="text-xs text-[#999999] font-mono uppercase">
+          {text.content.length} 字
+        </div>
       </div>
 
-      {/* Bottom row: time + action buttons */}
-      <div className="flex items-center justify-between pt-2.5 border-t border-neutral-100">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[11px] text-neutral-400 font-sans">
-            {getRelativeTime(text.createdAt)}
-          </span>
-          <span className="text-[10px] text-neutral-300 font-mono">
-            {Array.from(text.content.trim()).length} 字
-          </span>
+      {}
+      <div className="flex-1 overflow-hidden overflow-y-auto mb-2 text-xs font-mono text-[#222222] text-left leading-relaxed break-all select-text whitespace-pre-wrap pr-1 scrollbar-thin">
+        {text.content}
+      </div>
+
+      {}
+      <div className={`mt-1 flex items-center justify-between transition-all duration-150 select-none shrink-0 ${
+        isSelectionMode || isSelected
+          ? 'opacity-100'
+          : 'opacity-0 group-hover:opacity-100'
+      }`}>
+        {}
+        <div>
+          {onToggleSelect && (
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect(text);
+              }}
+              className={`w-4 h-4 rounded-full border transition-all duration-150 flex items-center justify-center ${
+                isSelected
+                  ? 'bg-[#191919] border-[#191919] text-white'
+                  : 'bg-white border-gray-300 hover:border-[#191919] text-transparent hover:text-[#191919] shadow-sm'
+              }`}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" className="w-2.5 h-2.5">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center gap-0.5">
-          {/* Pin toggle */}
+        {}
+        <div className="flex items-center gap-1">
           <button
-            title={text.isPinned ? '取消置顶' : '置顶'}
+            title={text.isPinned ? '取消置顶' : '固定/置顶'}
             onClick={(e) => {
               e.stopPropagation();
               onTogglePin();
             }}
-            className={`p-1.5 rounded-lg transition-all ${
-              text.isPinned 
-                ? 'text-amber-500 bg-amber-50/60' 
-                : 'text-neutral-400 hover:text-amber-500 hover:bg-amber-50/40 opacity-0 group-hover:opacity-100'
+            className={`p-1 rounded hover:bg-[#F2F2F2] transition-colors ${
+              text.isPinned ? 'text-amber-500' : 'text-[#666666] hover:text-[#1A1A1A]'
             }`}
           >
             {text.isPinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
           </button>
-
-          {/* Copy */}
+          
           <button
-            title="复制"
+            title="一键复制"
             onClick={(e) => {
               e.stopPropagation();
               onCopy();
             }}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition-all opacity-0 group-hover:opacity-100"
+            className="p-1 rounded hover:bg-[#F2F2F2] text-[#666666] hover:text-[#1A1A1A] transition-colors"
           >
             <Copy className="w-3.5 h-3.5" />
           </button>
 
-          {/* Edit */}
           {onEdit && (
             <button
-              title="编辑"
+              title="编辑内容"
               onClick={(e) => {
                 e.stopPropagation();
                 onEdit();
               }}
-              className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition-all opacity-0 group-hover:opacity-100"
+              className="p-1 rounded hover:bg-[#F2F2F2] text-[#666666] hover:text-[#1A1A1A] transition-colors"
             >
               <Edit2 className="w-3.5 h-3.5" />
             </button>
           )}
 
-          {/* Delete */}
           <button
             title="删除"
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
             }}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
+            className="p-1 rounded hover:bg-red-50 text-[#666666] hover:text-red-500 transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Copied overlay */}
+      {}
       <AnimatePresence>
         {isCopied && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-emerald-500/95 flex flex-col items-center justify-center text-white z-40 rounded-xl pointer-events-none"
+            className="absolute inset-0 bg-emerald-500/95 flex flex-col items-center justify-center text-white z-20 rounded-lg pointer-events-none select-none"
           >
             <motion.div
               initial={{ scale: 0.7, rotate: -30 }}

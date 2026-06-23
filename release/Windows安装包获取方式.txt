@@ -26,29 +26,15 @@ Mac 做不出 Windows 安装包，要用 GitHub 免费云端帮你打。
 3. 选 Public → Create repository
 4. 点页面上的「uploading an existing file」
 5. 双击解压 OpenCut-源码-上传GitHub.zip
-6. Mac 用户：在 Finder 按 Cmd+Shift+. 显示隐藏文件
-7. 把解压出来的所有东西拖进网页（必须包含 .github 文件夹）
-8. 点绿色 Commit changes
-
-⚠️ 上传后一定要检查：
-   点 Code 标签 → 文件列表里应有 .github 文件夹
-   点进去 → workflows → build.yml
-   如果没有 .github，Actions 里不会出现 Build OpenCut
-
-常见错误：
-- 自己新建空仓库、手动复制代码，漏掉了 .github 隐藏文件夹
-- 只上传了 src、package.json 等，没有带上 .github
-
-解决办法：
-- 重新用本 zip 完整上传，或
-- 只把 .github 文件夹单独上传到仓库根目录
+6. 把解压出来的所有东西拖进网页
+7. 点绿色 Commit changes
 
 ───────────────────────────────────────
 第 3 步：下载 Windows 安装包（等 15 分钟）
 ───────────────────────────────────────
-1. 确认 Code 页有 .github/workflows/build.yml 后，点顶部 Actions
-2. 左边应出现 Build OpenCut（若没有，说明 .github 没传上去）
-3. 点 Build OpenCut → Run workflow → 再点 Run workflow
+1. 点网页顶部的 Actions
+2. 左边点 Build OpenCut
+3. 点 Run workflow → 再点 Run workflow
 4. 等出现绿色 ✓（约 10~15 分钟）
 5. 点进去 → 往下滚 → Artifacts
 6. 下载 OpenCut-Windows

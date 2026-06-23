@@ -1,58 +1,7 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: -apple-system, "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-}
-
 body {
   background-color: #F2F2F2;
   color: #1A1A1A;
-}
-
-*, *::before, *::after {
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-input,
-textarea,
-[contenteditable="true"],
-.select-text,
-.select-text * {
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-::selection {
-  background: rgba(25, 25, 25, 0.16);
-}
-
-::-moz-selection {
-  background: rgba(25, 25, 25, 0.16);
-}
-
-.opencut-mark {
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: radial-gradient(circle at 70% 20%, #4b5563 0, #111827 46%, #030712 100%);
-  color: #ffffff;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 26px;
-  font-weight: 900;
-  line-height: 1;
-  transform: rotate(-11deg) skewX(-7deg);
-  box-shadow: 0 10px 24px -14px rgba(0, 0, 0, 0.7);
-}
-
-.opencut-mark-mini {
-  width: 16px;
-  height: 16px;
-  border-radius: 6px;
-  font-size: 18px;
-  box-shadow: none;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
 }

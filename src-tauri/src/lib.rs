@@ -1,7 +1,6 @@
 mod commands;
 mod migrate;
 mod models;
-mod smart_cleanup;
 mod storage;
 
 use std::sync::Arc;
@@ -10,8 +9,9 @@ use parking_lot::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WebviewWindow, WindowEvent,
+    Manager, WebviewWindow, WindowEvent,
 };
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use commands::AppState;
 use storage::Storage;
@@ -19,6 +19,15 @@ use storage::Storage;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        toggle_main_window(app);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -30,7 +39,6 @@ pub fn run() {
 
             let storage = Storage::new(clips_dir.clone());
             let _ = storage.dedupe_existing_images();
-            let _ = storage.dedupe_existing_texts();
 
             let state = Arc::new(AppState {
                 storage,
@@ -48,6 +56,15 @@ pub fn run() {
 
             commands::start_clipboard_watcher(app.handle().clone(), state);
 
+            app.global_shortcut()
+                .register(global_shortcut())
+                .expect("failed to register global shortcut");
+
+            #[cfg(target_os = "macos")]
+            {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -56,10 +73,6 @@ pub fn run() {
             commands::delete_image,
             commands::rename_image,
             commands::move_images,
-            commands::get_smart_cleanup_config,
-            commands::save_smart_cleanup_config,
-            commands::check_smart_cleanup,
-            commands::add_deleted_content_to_cleanup,
             commands::create_group,
             commands::rename_group,
             commands::delete_group,
@@ -76,11 +89,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let RunEvent::Reopen { .. } = event {
-                show_main_window(app_handle);
-            }
-        });
+        .run(|_app_handle, _event| {});
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -98,7 +107,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             .icon_as_template(true)
             .menu(&tray_menu)
             .show_menu_on_left_click(false)
-            .tooltip("OpenCut — 点击打开")
+            .tooltip("OpenCut（右键或 Control+点击 退出）")
             .on_menu_event(|app, event| match event.id.as_ref() {
                 "show" => show_main_window(app),
                 "quit" => {
@@ -106,17 +115,23 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
                 _ => {}
             })
-            .on_tray_icon_event(|tray, event| match event {
-                TrayIconEvent::Click {
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Right,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    return;
+                }
+                if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
                     ..
+                } = event
+                {
+                    toggle_main_window(tray.app_handle());
                 }
-                | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                } => show_main_window(tray.app_handle()),
-                _ => {}
             })
             .build(app)?;
     }
@@ -127,7 +142,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             .icon(tray_icon)
             .menu(&tray_menu)
             .show_menu_on_left_click(false)
-            .tooltip("OpenCut — 点击打开")
+            .tooltip("OpenCut（右键或 Control+点击 退出）")
             .on_menu_event(|app, event| match event.id.as_ref() {
                 "show" => show_main_window(app),
                 "quit" => {
@@ -135,22 +150,32 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
                 _ => {}
             })
-            .on_tray_icon_event(|tray, event| match event {
-                TrayIconEvent::Click {
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
                     ..
+                } = event
+                {
+                    toggle_main_window(tray.app_handle());
                 }
-                | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                } => show_main_window(tray.app_handle()),
-                _ => {}
             })
             .build(app)?;
     }
 
     Ok(())
+}
+
+fn global_shortcut() -> Shortcut {
+    #[cfg(target_os = "macos")]
+    {
+        return Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyV)
+    }
 }
 
 fn attach_window_behaviors(window: WebviewWindow) {
@@ -166,12 +191,21 @@ fn attach_window_behaviors(window: WebviewWindow) {
     });
 }
 
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            return;
+        }
+        show_main_window(app);
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         position_panel(&window);
         let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_always_on_top(true);
         let _ = window.set_focus();
     }
 }
