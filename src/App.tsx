@@ -33,16 +33,15 @@ import {
   Upload, 
   Pin, 
   Clipboard, 
-  Sparkles, 
   Folder, 
   Plus, 
   Edit2, 
   ChevronDown,
-  Settings,
   ChevronLeft,
   Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { check as checkUpdate } from '@tauri-apps/plugin-updater';
 
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
@@ -63,6 +62,7 @@ export default function App() {
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [activeGroupMenuId, setActiveGroupMenuId] = useState<string | null>(null);
   const [isBatchMoveMenuOpen, setIsBatchMoveMenuOpen] = useState(false);
+  const [isTextCleanMenuOpen, setIsTextCleanMenuOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'image' | 'text'>('image');
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
@@ -79,6 +79,9 @@ export default function App() {
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
   const [isMemoExpanded, setIsMemoExpanded] = useState(true);
+  const [updateInfo, setUpdateInfo] = useState<{ version: string; body: string; apply: () => Promise<void> } | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
 
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -120,6 +123,18 @@ export default function App() {
     if (!privacyAgreed) {
       setShowPrivacyNotice(true);
     }
+
+    checkUpdate().then((update) => {
+      if (update) {
+        setUpdateInfo({
+          version: update.version,
+          body: update.body || '',
+          apply: async () => {
+            await update.downloadAndInstall();
+          },
+        });
+      }
+    }).catch(() => {});
 
     let unlisten: (() => void) | undefined;
     onClipUpdated((kind) => {
@@ -228,6 +243,29 @@ export default function App() {
     } catch (e) {
       console.error(e);
       showToast('清空失败');
+    }
+  };
+
+  const clearShortTexts = async () => {
+    const targets = texts.filter(t => !t.isPinned && t.content.trim().length <= 5);
+    if (targets.length === 0) {
+      showToast('没有需要清理的短文本');
+      return;
+    }
+
+    try {
+      await Promise.all(targets.map(t => removeText(t.id)));
+      const targetIds = new Set(targets.map(t => t.id));
+      setTexts(prev => prev.filter(t => !targetIds.has(t.id)));
+      setSelectedTextIds(prev => {
+        const updated = new Set(prev);
+        targetIds.forEach(id => updated.delete(id));
+        return updated;
+      });
+      showToast(`已清理 ${targets.length} 条短文本`);
+    } catch (e) {
+      console.error(e);
+      showToast('短文本清理失败');
     }
   };
 
@@ -581,6 +619,7 @@ export default function App() {
     try {
       const updated = await renameGroup(id, name.trim());
       setGroups(prev => prev.map(g => g.id === id ? updated : g));
+      setActiveGroupMenuId(null);
       setEditingGroupId(null);
       showToast('分类名称修改成功');
     } catch (e) {
@@ -594,6 +633,7 @@ export default function App() {
       await deleteGroup(id);
       setGroups(prev => prev.filter(g => g.id !== id));
       setImages(prev => prev.map(img => img.groupId === id ? { ...img, groupId: 'default' } : img));
+      setActiveGroupMenuId(null);
       if (selectedGroupId === id) {
         setSelectedGroupId('all');
       }
@@ -866,14 +906,47 @@ export default function App() {
 
               <div className="h-4 w-px bg-neutral-200 select-none"></div>
 
-              <button 
-                id="action-btn-clear"
-                onClick={clearUnpinnedTexts} 
-                className="text-red-500 hover:text-red-655 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                <span>清空未置顶</span>
-              </button>
+              <div className="relative">
+                <button
+                  id="action-btn-clear"
+                  onClick={() => setIsTextCleanMenuOpen(!isTextCleanMenuOpen)}
+                  className="text-red-500 hover:text-red-655 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer bg-transparent border-0 p-0"
+                  title="清理文本"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                  <ChevronDown className="w-3.5 h-3.5 text-red-400 transition-transform duration-200" style={{ transform: isTextCleanMenuOpen ? 'rotate(180deg)' : 'none' }} />
+                </button>
+
+                {isTextCleanMenuOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40 cursor-default"
+                      onClick={() => setIsTextCleanMenuOpen(false)}
+                    />
+                    <div className="absolute right-0 top-full mt-3 bg-white border border-neutral-200/80 shadow-[0_16px_40px_rgba(0,0,0,0.12)] rounded-2xl py-2 z-50 w-40 text-xs font-sans text-neutral-850 flex flex-col font-bold select-none anim-fade">
+                      <button
+                        onClick={() => {
+                          setIsTextCleanMenuOpen(false);
+                          clearUnpinnedTexts();
+                        }}
+                        className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
+                      >
+                        智能清理
+                      </button>
+                      <div className="h-px bg-neutral-100 mx-4" />
+                      <button
+                        onClick={() => {
+                          setIsTextCleanMenuOpen(false);
+                          clearShortTexts();
+                        }}
+                        className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
+                      >
+                        短文本清理
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1034,9 +1107,10 @@ export default function App() {
                                   </button>
                                   <button
                                     onClick={() => {
-                                      setActiveGroupMenuId(null);
                                       if (confirm(`确定要删除分类“${g.name}”吗？\n删除后，该分类下的图片将移回“默认分类”，不会被真的删除。`)) {
                                         handleDeleteGroup(g.id);
+                                      } else {
+                                        setActiveGroupMenuId(null);
                                       }
                                     }}
                                     className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-655 flex items-center gap-1.5 transition-colors font-semibold border-t border-neutral-100/60 mt-1 pt-1.5"
@@ -1797,8 +1871,35 @@ export default function App() {
 
       {}
       <footer className="h-8 shrink-0 border-t border-[#D1D1D1] bg-[#F9F9F9] px-4 flex items-center justify-between font-mono text-xs text-[#666666] tracking-widest z-10 select-none">
-        <div>OpenCut 本地剪贴板</div>
-        <div className="flex gap-6 pr-1">
+        <div className="flex items-center gap-2">
+          <span>OpenCut</span>
+          <span className="text-[#AAAAAA] tracking-normal font-mono text-[10px]">v0.1.0</span>
+          {isCheckingUpdate && (
+            <span className="text-[#AAAAAA] tracking-normal text-[10px]">检查中...</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {isInstallingUpdate && (
+            <span className="text-amber-600 text-[10px] tracking-normal">正在下载更新...</span>
+          )}
+          {updateInfo && !isInstallingUpdate && (
+            <button
+              onClick={async () => {
+                setIsInstallingUpdate(true);
+                try {
+                  await updateInfo.apply();
+                } catch (e) {
+                  showToast('更新失败');
+                  setIsInstallingUpdate(false);
+                }
+              }}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all cursor-pointer tracking-normal flex items-center gap-1 shadow-sm"
+            >
+              <Download className="w-3 h-3" />
+              更新至 v{updateInfo.version}
+            </button>
+          )}
+          <div className="flex gap-6 pr-1">
           {activeTab === 'image' ? (
             <>
               <span>[选择] 勾选圆圈多选</span>
@@ -1819,6 +1920,7 @@ export default function App() {
             </>
           )}
         </div>
+        </div> {/* end right-side container */}
       </footer>
     </div>
   );

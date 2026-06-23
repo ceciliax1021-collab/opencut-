@@ -32,8 +32,14 @@
         "enable": true,
         "scope": ["$APPDATA/**", "$APPLOCALDATA/**", "$LOCALAPPDATA/**"]
       },
-      "csp": "default-src 'self' asset: tauri:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: tauri: data: blob:; connect-src 'none'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'",
+      "csp": "default-src 'self' asset: tauri:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: tauri: data: blob:; connect-src 'self' https://raw.githubusercontent.com; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'",
       "capabilities": ["default"]
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://raw.githubusercontent.com/ceciliax1021-collab/opencut-/main/release/update.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyOEZBNTk4NjlBRUZGMzAKUldRdy82NXBtS1dQRW0xVTZ0VUliU1pheHFRdnMzRW9ad0VBY0lDR3lCQ1M3NTRYV2dVSE84Z2UK"
     }
   },
   "bundle": {
