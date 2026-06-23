@@ -20,6 +20,11 @@ release/*.txt
 # Project docs (local only, not on GitHub)
 README.md
 CLAUDE.md
+PRIVACY-AUDIT.md
+分发指南.md
+
+# Local scripts
+scripts/
 
 # OS files
 .DS_Store
