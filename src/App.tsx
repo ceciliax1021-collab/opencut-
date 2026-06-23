@@ -77,6 +77,8 @@ export default function App() {
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
+  const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
+  const [isMemoExpanded, setIsMemoExpanded] = useState(true);
 
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -113,6 +115,11 @@ export default function App() {
   useEffect(() => {
     loadImages();
     loadTexts();
+
+    const privacyAgreed = localStorage.getItem('opencut-privacy-agreed');
+    if (!privacyAgreed) {
+      setShowPrivacyNotice(true);
+    }
 
     let unlisten: (() => void) | undefined;
     onClipUpdated((kind) => {
@@ -997,7 +1004,7 @@ export default function App() {
                                 isSelected ? 'text-white/80 hover:text-white hover:bg-white/10' : 'text-neutral-400 hover:text-neutral-800 hover:bg-neutral-100'
                               }`}
                             >
-                              <Settings className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
 
                             {}
@@ -1239,33 +1246,73 @@ export default function App() {
           ) : (
             <div className="flex flex-col h-full">
               {}
-              <form 
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (newTextContent.trim()) {
-                    saveTextClip(newTextContent);
-                    setNewTextContent('');
-                  }
-                }}
-                className="flex gap-2 max-w-2xl mx-auto mb-6 w-full shrink-0 select-text"
-              >
-                <input 
-                  type="text" 
-                  placeholder="在此输入新的文本内容，键盘按 Enter 键即可快速保存..."
-                  value={newTextContent}
-                  onChange={(e) => setNewTextContent(e.target.value)}
-                  className="flex-1 bg-white border border-[#D1D1D1] rounded-lg px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#191919]/15 focus:border-[#191919] transition-all shadow-sm"
-                />
-                <button 
-                  type="submit"
-                  className="bg-[#1A1A1A] hover:bg-black text-white text-xs font-bold px-5 py-2.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm shrink-0"
+              <div className="bg-white border border-neutral-100/60 rounded-2xl shadow-[0_16px_40px_-6px_rgba(0,0,0,0.06),_0_2px_8px_rgba(0,0,0,0.01)] overflow-hidden mb-4 shrink-0">
+                {}
+                <button
+                  type="button"
+                  onClick={() => setIsMemoExpanded(!isMemoExpanded)}
+                  className="w-full flex items-center justify-between px-4 h-11 bg-neutral-50/50 border-b border-neutral-100/60 text-xs font-bold text-neutral-700 cursor-pointer hover:bg-neutral-100/30 transition-colors select-none"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                  新建 (Enter)
+                  <span>临时备忘录</span>
+                  <span className="text-neutral-400 text-base font-mono leading-none select-none transition-transform duration-200" style={{ transform: isMemoExpanded ? 'rotate(0deg)' : 'rotate(0deg)' }}>
+                    {isMemoExpanded ? '−' : '+'}
+                  </span>
                 </button>
-              </form>
 
-              <div className="flex-1 overflow-y-auto">
+                <AnimatePresence initial={false}>
+                  {isMemoExpanded && (
+                    <motion.div
+                      key="memo-panel"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2, ease: 'easeInOut' }}
+                      className="overflow-hidden"
+                    >
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (newTextContent.trim()) {
+                            saveTextClip(newTextContent);
+                            setNewTextContent('');
+                          }
+                        }}
+                        className="p-4 space-y-2"
+                      >
+                        <textarea
+                          placeholder="在此输入临时备忘录内容，Cmd+Enter 或点击保存按钮快速保存..."
+                          value={newTextContent}
+                          onChange={(e) => setNewTextContent(e.target.value)}
+                          onKeyDown={(e) => {
+                            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                              e.preventDefault();
+                              if (newTextContent.trim()) {
+                                saveTextClip(newTextContent);
+                                setNewTextContent('');
+                              }
+                            }
+                          }}
+                          className="w-full bg-white border border-[#D1D1D1] rounded-lg px-4 py-3 text-xs focus:outline-none focus:ring-2 focus:ring-[#191919]/15 focus:border-[#191919] transition-all shadow-sm resize-y min-h-[140px] font-sans leading-relaxed"
+                          rows={5}
+                        />
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-neutral-400 font-mono select-none">⌘↵ 快捷保存</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="submit"
+                              className="bg-[#1A1A1A] hover:bg-black text-white text-xs font-bold px-5 py-2 rounded-lg transition-all shadow-sm cursor-pointer active:scale-95"
+                            >
+                              保存到剪贴板
+                            </button>
+                          </div>
+                        </div>
+                      </form>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              <div className="flex-1 overflow-y-auto min-h-0">
                 {texts.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-[50vh] text-[#999999]">
                     <p className="font-sans text-xs tracking-widest text-[#999999] mb-2 uppercase select-none">暂无文本记录</p>
@@ -1659,6 +1706,74 @@ export default function App() {
                   className="px-5 py-2 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-xl transition-all shadow-md cursor-pointer active:scale-95"
                 >
                   保存修改
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {}
+      <AnimatePresence>
+        {showPrivacyNotice && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.93 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.93 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 280 }}
+              className="bg-white border border-neutral-200/80 shadow-2xl rounded-2xl w-full max-w-md overflow-hidden font-sans text-[#1A1A1A]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 pt-6 pb-2">
+                <h2 className="text-base font-bold text-neutral-900 mb-1">欢迎使用 OpenCut</h2>
+                <p className="text-xs text-neutral-500 font-medium">本地剪贴板管理工具</p>
+              </div>
+
+              <div className="px-6 py-4 space-y-3 text-xs text-neutral-700 leading-relaxed">
+                <div className="bg-amber-50 border border-amber-200/60 rounded-xl px-4 py-3">
+                  <p className="font-bold text-amber-800 text-xs mb-1">关于隐私</p>
+                  <p className="text-amber-700 text-[11px]">
+                    OpenCut 会在后台监控你的系统剪贴板（每 500ms），自动保存复制的图片和文本内容。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="font-bold text-neutral-800 text-xs">数据存储说明：</p>
+                  <ul className="space-y-1.5 text-neutral-600">
+                    <li className="flex gap-2">
+                      <span className="text-emerald-600 shrink-0">✓</span>
+                      <span>所有数据保存在本地，<strong className="text-neutral-800">不会上传到任何服务器</strong></span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="text-emerald-600 shrink-0">✓</span>
+                      <span>无网络请求、无分析统计、无崩溃上报</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="text-emerald-600 shrink-0">✓</span>
+                      <span>纯离线工具，断网也可正常使用</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="text-neutral-300 shrink-0">⚙</span>
+                      <span>数据路径：<code className="text-[10px] bg-neutral-100 px-1 py-0.5 rounded font-mono">~/Library/Application Support/com.opencut.desktop/clips/</code></span>
+                    </li>
+                  </ul>
+                </div>
+
+                <p className="text-[11px] text-neutral-400 italic">
+                  敏感信息（如密码、验证码）复制后会自动保存，建议定期使用「智能清理」功能清除不需要的记录。
+                </p>
+              </div>
+
+              <div className="px-6 py-4 border-t border-neutral-100 bg-neutral-50/50 flex justify-end">
+                <button
+                  onClick={() => {
+                    setShowPrivacyNotice(false);
+                    localStorage.setItem('opencut-privacy-agreed', 'true');
+                  }}
+                  className="bg-[#191919] hover:bg-black text-white text-xs font-bold px-6 py-2.5 rounded-xl transition-all shadow-sm cursor-pointer active:scale-95"
+                >
+                  我知道了，开始使用
                 </button>
               </div>
             </motion.div>
