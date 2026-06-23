@@ -15,6 +15,11 @@ uploads/
 release/*.dmg
 release/*.zip
 release/*.exe
+release/*.txt
+
+# Project docs (local only, not on GitHub)
+README.md
+CLAUDE.md
 
 # OS files
 .DS_Store
