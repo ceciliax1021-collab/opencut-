@@ -1,0 +1,41 @@
+{
+  "rules": [
+    {
+      "id": "hex_color",
+      "name": "色值（如 #FF0000）",
+      "enabled": true,
+      "pattern": "^#[0-9a-fA-F]{3,8}$",
+      "description": "匹配十六进制颜色代码"
+    },
+    {
+      "id": "pure_number",
+      "name": "纯数字（5字内）",
+      "enabled": true,
+      "pattern": "^\\d{1,5}$",
+      "description": "匹配5位以内的纯数字"
+    },
+    {
+      "id": "pure_english",
+      "name": "纯英文内容",
+      "enabled": true,
+      "pattern": "^[a-zA-Z]+$",
+      "description": "匹配纯英文字母内容"
+    },
+    {
+      "id": "random_alphanumeric",
+      "name": "随机字母数字组合",
+      "enabled": true,
+      "pattern": "^[a-zA-Z0-9]{6,20}$",
+      "description": "匹配6-20位的字母数字组合"
+    },
+    {
+      "id": "single_char",
+      "name": "单个字符",
+      "enabled": true,
+      "pattern": "^.$",
+      "description": "匹配任意单个字符"
+    }
+  ],
+  "excludedContent": [],
+  "deletedContentHistory": []
+}

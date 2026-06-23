@@ -1,0 +1,12 @@
+node_modules/
+build/
+dist/
+coverage/
+src-tauri/target/
+src-tauri/gen/
+uploads/
+release/*.dmg
+release/*.zip
+.DS_Store
+*.log
+.env*

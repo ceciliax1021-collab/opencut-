@@ -1,0 +1,34 @@
+# OpenCut 安装包
+
+## Mac 用户（直接可用）
+
+1. 双击 **OpenCut-macOS.dmg**
+2. 把 OpenCut 拖到「应用程序」文件夹
+3. 从启动台或应用程序里打开 OpenCut
+4. 顶部菜单栏会出现 OpenCut 图标；程序坞也会出现 OpenCut 图标
+5. 复制任意图片或文字，会自动保存
+6. 关闭窗口后，点击 **菜单栏图标** 或 **程序坞图标** 可再次打开
+
+---
+
+## Windows 用户
+
+Windows 安装包需要单独生成，请看同目录下的 **Windows安装包获取方式.txt**
+
+---
+
+## 常见问题
+
+**Q：关闭窗口后程序还在吗？**  
+A：在的。程序在后台运行，Mac 在菜单栏，Windows 在系统托盘。
+
+**Q：数据存在哪？**  
+A：完全本地。Mac：`~/Library/Application Support/com.opencut.desktop/clips/`
+
+**Q：如何彻底退出？**  
+A：任选其一即可：
+- 按 **`⌘ + Q`**
+- 菜单栏图标 **右键**（或 **Control + 点击**）→「退出 OpenCut」
+
+**Q：旧版关不掉怎么办？**  
+A：打开「活动监视器」→ 搜索 `OpenCut` → 点左上角 ✕ 强制退出。然后重新安装新版 dmg。
