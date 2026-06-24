@@ -9,7 +9,6 @@ import {
   saveText as storeText,
   togglePinText,
   deleteText as removeText,
-  clearUnpinnedTexts as clearTexts,
   uploadImage,
   deleteImage as removeImage,
   renameImage,
@@ -43,6 +42,9 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { check as checkUpdate } from '@tauri-apps/plugin-updater';
 
+type ActiveTab = 'image' | 'text' | 'memo';
+type PendingTextCleanup = { label: string } | null;
+
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -64,13 +66,14 @@ export default function App() {
   const [isBatchMoveMenuOpen, setIsBatchMoveMenuOpen] = useState(false);
   const [isTextCleanMenuOpen, setIsTextCleanMenuOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'image' | 'text'>('image');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('image');
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
 
   const [texts, setTexts] = useState<TextClip[]>([]);
   const [newTextContent, setNewTextContent] = useState('');
   const [selectedTextIds, setSelectedTextIds] = useState<Set<string>>(new Set());
   const [isTextSelectMode, setIsTextSelectMode] = useState(false);
+  const [pendingTextCleanup, setPendingTextCleanup] = useState<PendingTextCleanup>(null);
   const [editingText, setEditingText] = useState<TextClip | null>(null);
   const [editingTextContent, setEditingTextContent] = useState('');
   const [textContextMenu, setTextContextMenu] = useState<{ x: number, y: number, text: TextClip } | null>(null);
@@ -78,7 +81,6 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
-  const [isMemoExpanded, setIsMemoExpanded] = useState(true);
   const [updateInfo, setUpdateInfo] = useState<{ version: string; body: string; apply: () => Promise<void> } | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
@@ -94,6 +96,55 @@ export default function App() {
     toastTimeoutRef.current = setTimeout(() => {
       setToast({ message: '', visible: false });
     }, 1000);
+  };
+
+  const getErrorMessage = (error: unknown) => {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    return '未知错误';
+  };
+
+  const checkForUpdate = async (silent = false) => {
+    if (isCheckingUpdate || isInstallingUpdate) return;
+
+    setIsCheckingUpdate(true);
+    try {
+      const update = await checkUpdate();
+      if (update) {
+        setUpdateInfo({
+          version: update.version,
+          body: update.body || '',
+          apply: async () => {
+            await update.downloadAndInstall();
+          },
+        });
+        if (!silent) showToast(`发现新版本 v${update.version}`);
+      } else if (!silent) {
+        setUpdateInfo(null);
+        showToast('当前已是最新版本');
+      }
+    } catch (error) {
+      console.error('update check failed', error);
+      if (!silent) showToast(`检查更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!updateInfo || isInstallingUpdate) return;
+
+    setIsInstallingUpdate(true);
+    try {
+      await updateInfo.apply();
+      setUpdateInfo(null);
+      showToast('更新已安装，重启后生效');
+    } catch (error) {
+      console.error('update install failed', error);
+      showToast(`更新失败：${getErrorMessage(error)}`);
+    } finally {
+      setIsInstallingUpdate(false);
+    }
   };
 
   const loadImages = async () => {
@@ -124,17 +175,7 @@ export default function App() {
       setShowPrivacyNotice(true);
     }
 
-    checkUpdate().then((update) => {
-      if (update) {
-        setUpdateInfo({
-          version: update.version,
-          body: update.body || '',
-          apply: async () => {
-            await update.downloadAndInstall();
-          },
-        });
-      }
-    }).catch(() => {});
+    checkForUpdate(true);
 
     let unlisten: (() => void) | undefined;
     onClipUpdated((kind) => {
@@ -227,6 +268,7 @@ export default function App() {
         updated.delete(id);
         return updated;
       });
+      setPendingTextCleanup(null);
       showToast('文本已删除');
     } catch (e) {
       console.error(e);
@@ -234,39 +276,43 @@ export default function App() {
     }
   };
 
-  const clearUnpinnedTexts = async () => {
-    try {
-      await clearTexts();
-      setTexts(prev => prev.filter(t => t.isPinned));
-      setSelectedTextIds(new Set());
-      showToast('已清空未置顶的文本记录');
-    } catch (e) {
-      console.error(e);
-      showToast('清空失败');
-    }
+  const getShortTextCleanupCandidates = () => (
+    texts.filter(t => !t.isPinned && t.content.trim().length <= 5)
+  );
+
+  const getSmartTextCleanupCandidates = () => {
+    const seen = new Set<string>();
+
+    return texts.filter((text) => {
+      const normalized = text.content.trim().replace(/\s+/g, ' ');
+      if (!normalized) return !text.isPinned;
+
+      if (text.isPinned) {
+        seen.add(normalized);
+        return false;
+      }
+
+      if (normalized.length <= 5) return true;
+      if (seen.has(normalized)) return true;
+
+      seen.add(normalized);
+      return false;
+    });
   };
 
-  const clearShortTexts = async () => {
-    const targets = texts.filter(t => !t.isPinned && t.content.trim().length <= 5);
-    if (targets.length === 0) {
-      showToast('没有需要清理的短文本');
+  const startTextCleanupReview = (label: string, candidates: TextClip[]) => {
+    if (candidates.length === 0) {
+      showToast('没有需要清理的文本');
       return;
     }
 
-    try {
-      await Promise.all(targets.map(t => removeText(t.id)));
-      const targetIds = new Set(targets.map(t => t.id));
-      setTexts(prev => prev.filter(t => !targetIds.has(t.id)));
-      setSelectedTextIds(prev => {
-        const updated = new Set(prev);
-        targetIds.forEach(id => updated.delete(id));
-        return updated;
-      });
-      showToast(`已清理 ${targets.length} 条短文本`);
-    } catch (e) {
-      console.error(e);
-      showToast('短文本清理失败');
-    }
+    setActiveTab('text');
+    setSearchQuery('');
+    setIsSearchExpanded(false);
+    setIsTextSelectMode(true);
+    setPendingTextCleanup({ label });
+    setSelectedTextIds(new Set(candidates.map(t => t.id)));
+    showToast(`已预选 ${candidates.length} 条，请确认后清理`);
   };
 
   const uploadFiles = async (fileArray: FileList | File[]) => {
@@ -392,13 +438,21 @@ export default function App() {
   const deleteSelectedTexts = async () => {
     if (selectedTextIds.size === 0) return;
     const idsToDelete: string[] = Array.from(selectedTextIds);
+    const actionLabel = pendingTextCleanup?.label || '删除选中';
+
+    if (!confirm(`确认${actionLabel} ${idsToDelete.length} 条文本吗？\n此操作会删除本地记录，无法撤销。`)) {
+      return;
+    }
+
     setTexts(prev => prev.filter(t => !selectedTextIds.has(t.id)));
     setSelectedTextIds(new Set());
+    setPendingTextCleanup(null);
+    setIsTextSelectMode(false);
     
     for (const id of idsToDelete) {
       removeText(id).catch(console.error);
     }
-    showToast(`已删除 ${idsToDelete.length} 条文本`);
+    showToast(`已${actionLabel} ${idsToDelete.length} 条文本`);
   };
 
   const copyToClipboard = async (image: UploadedImage) => {
@@ -835,7 +889,11 @@ export default function App() {
           <div className="h-4 w-px bg-neutral-200"></div>
           <div className="text-[11px] font-sans font-medium text-neutral-500 bg-neutral-100 px-2.5 py-1 rounded-full flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-            <span>{activeTab === 'image' ? `图片 ${filteredImages.length} 张` : `文本 ${texts.length} 条`}</span>
+            <span>
+              {activeTab === 'image' && `图片 ${filteredImages.length} 张`}
+              {activeTab === 'text' && `文本 ${texts.length} 条`}
+              {activeTab === 'memo' && '临时备忘录'}
+            </span>
           </div>
         </div>
 
@@ -847,6 +905,7 @@ export default function App() {
               setActiveTab('image');
               setSearchQuery('');
               setIsSearchExpanded(false);
+              setPendingTextCleanup(null);
             }}
             className={`transition-all duration-200 cursor-pointer ${
               activeTab === 'image' 
@@ -872,6 +931,23 @@ export default function App() {
           >
             文本
           </button>
+          <span className="text-neutral-300 font-light select-none">/</span>
+          <button
+            id="tab-button-memo"
+            onClick={() => {
+              setActiveTab('memo');
+              setSearchQuery('');
+              setIsSearchExpanded(false);
+              setPendingTextCleanup(null);
+            }}
+            className={`transition-all duration-200 cursor-pointer ${
+              activeTab === 'memo'
+                ? 'text-neutral-900 font-extrabold text-[15px]'
+                : 'text-neutral-400 hover:text-neutral-700 font-semibold text-[14px]'
+            }`}
+          >
+            备忘录
+          </button>
         </div>
         
         {}
@@ -888,12 +964,13 @@ export default function App() {
               </button>
               <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileSelect} />
             </div>
-          ) : (
+          ) : activeTab === 'text' ? (
             <div className="flex items-center gap-4.5 animate-in fade-in duration-150">
               <button 
                 id="action-btn-merge-copy"
                 onClick={() => {
                   setIsTextSelectMode(!isTextSelectMode);
+                  setPendingTextCleanup(null);
                   if (isTextSelectMode) {
                     setSelectedTextIds(new Set());
                   }
@@ -927,7 +1004,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsTextCleanMenuOpen(false);
-                          clearUnpinnedTexts();
+                          startTextCleanupReview('智能清理', getSmartTextCleanupCandidates());
                         }}
                         className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
                       >
@@ -937,7 +1014,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsTextCleanMenuOpen(false);
-                          clearShortTexts();
+                          startTextCleanupReview('短文本清理', getShortTextCleanupCandidates());
                         }}
                         className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
                       >
@@ -947,6 +1024,10 @@ export default function App() {
                   </>
                 )}
               </div>
+            </div>
+          ) : (
+            <div className="text-xs font-bold text-neutral-400 animate-in fade-in duration-150">
+              快速记录
             </div>
           )}
         </div>
@@ -1201,6 +1282,7 @@ export default function App() {
           className="flex-1 relative p-6 overflow-hidden overflow-y-auto select-none bg-[#F7F7F7] [overflow-anchor:auto]"
         >
           {}
+          {activeTab !== 'memo' && (
           <div className="absolute top-4 right-6 z-45 select-text">
             <div 
               className={`flex items-center bg-white border border-neutral-200/80 shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-350 rounded-full h-10 ${
@@ -1246,6 +1328,7 @@ export default function App() {
               )}
             </div>
           </div>
+          )}
 
           {}
           <AnimatePresence>
@@ -1317,75 +1400,8 @@ export default function App() {
                 </AnimatePresence>
               </div>
             )
-          ) : (
+          ) : activeTab === 'text' ? (
             <div className="flex flex-col h-full">
-              {}
-              <div className="bg-white border border-neutral-100/60 rounded-2xl shadow-[0_16px_40px_-6px_rgba(0,0,0,0.06),_0_2px_8px_rgba(0,0,0,0.01)] overflow-hidden mb-4 shrink-0">
-                {}
-                <button
-                  type="button"
-                  onClick={() => setIsMemoExpanded(!isMemoExpanded)}
-                  className="w-full flex items-center justify-between px-4 h-11 bg-neutral-50/50 border-b border-neutral-100/60 text-xs font-bold text-neutral-700 cursor-pointer hover:bg-neutral-100/30 transition-colors select-none"
-                >
-                  <span>临时备忘录</span>
-                  <span className="text-neutral-400 text-base font-mono leading-none select-none transition-transform duration-200" style={{ transform: isMemoExpanded ? 'rotate(0deg)' : 'rotate(0deg)' }}>
-                    {isMemoExpanded ? '−' : '+'}
-                  </span>
-                </button>
-
-                <AnimatePresence initial={false}>
-                  {isMemoExpanded && (
-                    <motion.div
-                      key="memo-panel"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2, ease: 'easeInOut' }}
-                      className="overflow-hidden"
-                    >
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          if (newTextContent.trim()) {
-                            saveTextClip(newTextContent);
-                            setNewTextContent('');
-                          }
-                        }}
-                        className="p-4 space-y-2"
-                      >
-                        <textarea
-                          placeholder="在此输入临时备忘录内容，Cmd+Enter 或点击保存按钮快速保存..."
-                          value={newTextContent}
-                          onChange={(e) => setNewTextContent(e.target.value)}
-                          onKeyDown={(e) => {
-                            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                              e.preventDefault();
-                              if (newTextContent.trim()) {
-                                saveTextClip(newTextContent);
-                                setNewTextContent('');
-                              }
-                            }
-                          }}
-                          className="w-full bg-white border border-[#D1D1D1] rounded-lg px-4 py-3 text-xs focus:outline-none focus:ring-2 focus:ring-[#191919]/15 focus:border-[#191919] transition-all shadow-sm resize-y min-h-[140px] font-sans leading-relaxed"
-                          rows={5}
-                        />
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] text-neutral-400 font-mono select-none">⌘↵ 快捷保存</span>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="submit"
-                              className="bg-[#1A1A1A] hover:bg-black text-white text-xs font-bold px-5 py-2 rounded-lg transition-all shadow-sm cursor-pointer active:scale-95"
-                            >
-                              保存到剪贴板
-                            </button>
-                          </div>
-                        </div>
-                      </form>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
               <div className="flex-1 overflow-y-auto min-h-0">
                 {texts.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-[50vh] text-[#999999]">
@@ -1422,6 +1438,56 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
+          ) : (
+            <div className="h-full flex items-center justify-center">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (newTextContent.trim()) {
+                    saveTextClip(newTextContent);
+                    setNewTextContent('');
+                  }
+                }}
+                className="w-full max-w-3xl bg-white border border-neutral-100/60 rounded-2xl shadow-[0_16px_40px_-6px_rgba(0,0,0,0.06),_0_2px_8px_rgba(0,0,0,0.01)] p-5 space-y-3"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold text-neutral-800">临时备忘录</span>
+                  <span className="text-[10px] text-neutral-400 font-mono select-none">Cmd+Enter 快捷保存</span>
+                </div>
+                <textarea
+                  placeholder="在此输入临时备忘录内容..."
+                  value={newTextContent}
+                  onChange={(e) => setNewTextContent(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                      e.preventDefault();
+                      if (newTextContent.trim()) {
+                        saveTextClip(newTextContent);
+                        setNewTextContent('');
+                      }
+                    }
+                  }}
+                  className="w-full bg-white border border-[#D1D1D1] rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#191919]/15 focus:border-[#191919] transition-all shadow-sm resize-y min-h-[360px] font-sans leading-relaxed"
+                  rows={14}
+                  autoFocus
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewTextContent('')}
+                    className="text-xs text-neutral-500 hover:text-neutral-800 bg-neutral-100 hover:bg-neutral-200/80 px-4 py-2 rounded-lg font-bold transition-all cursor-pointer"
+                  >
+                    清空输入
+                  </button>
+                  <button
+                    type="submit"
+                    className="bg-[#1A1A1A] hover:bg-black text-white text-xs font-bold px-5 py-2 rounded-lg transition-all shadow-sm cursor-pointer active:scale-95"
+                  >
+                    保存到剪贴板
+                  </button>
+                </div>
+              </form>
             </div>
           )}
         </main>
@@ -1533,7 +1599,7 @@ export default function App() {
             className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#191919]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_24px_50px_rgba(0,0,0,0.3)] rounded-2xl p-2 flex items-center gap-1.5 z-40 select-none font-sans text-xs"
           >
             <span className="pl-3.5 pr-2.5 text-xs font-bold text-white tracking-wide font-sans">
-              已选中 {selectedTextIds.size} 条文本
+              {pendingTextCleanup ? `待确认${pendingTextCleanup.label}` : '已选中'} {selectedTextIds.size} 条文本
             </span>
             <div className="w-px h-4 bg-neutral-800 mx-1.5" />
             <button
@@ -1564,13 +1630,14 @@ export default function App() {
               className="px-3.5 py-2 text-xs font-bold text-red-400 hover:text-red-350 hover:bg-red-950/40 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>删除选中</span>
+              <span>{pendingTextCleanup ? '确认清理' : '删除选中'}</span>
             </button>
             <div className="w-px h-4 bg-neutral-800 mx-1.5" />
             <button
               onClick={() => {
                 setIsTextSelectMode(false);
                 setSelectedTextIds(new Set());
+                setPendingTextCleanup(null);
               }}
               className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
             >
@@ -1880,23 +1947,24 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           {isInstallingUpdate && (
-            <span className="text-amber-600 text-[10px] tracking-normal">正在下载更新...</span>
+            <span className="text-amber-600 text-[10px] tracking-normal">正在安装更新...</span>
           )}
           {updateInfo && !isInstallingUpdate && (
             <button
-              onClick={async () => {
-                setIsInstallingUpdate(true);
-                try {
-                  await updateInfo.apply();
-                } catch (e) {
-                  showToast('更新失败');
-                  setIsInstallingUpdate(false);
-                }
-              }}
+              onClick={installUpdate}
               className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all cursor-pointer tracking-normal flex items-center gap-1 shadow-sm"
             >
-              <Download className="w-3 h-3" />
+              <DownloadCloud className="w-3 h-3" />
               更新至 v{updateInfo.version}
+            </button>
+          )}
+          {!updateInfo && !isInstallingUpdate && (
+            <button
+              onClick={() => checkForUpdate(false)}
+              disabled={isCheckingUpdate}
+              className="text-[#777777] hover:text-[#1A1A1A] text-[10px] font-bold transition-all cursor-pointer tracking-normal disabled:cursor-default disabled:opacity-50"
+            >
+              检查更新
             </button>
           )}
           <div className="flex gap-6 pr-1">
@@ -1909,14 +1977,18 @@ export default function App() {
               <span>[粘贴] Ctrl+V 快捷导入</span>
               <span>[框选] 鼠标拖拽批量选中</span>
             </>
-          ) : (
+          ) : activeTab === 'text' ? (
             <>
               <span>[选择] 勾选圆圈多选</span>
               <span>[复制] 单击内容快速复制</span>
-              <span>[保存] 输入框 Enter 快捷保存</span>
               <span>[粘贴] Ctrl+V 快捷导入文本</span>
               <span>[删除] Delete 键删除选中</span>
               <span>[框选] 鼠标拖拽批量选中</span>
+            </>
+          ) : (
+            <>
+              <span>[保存] Cmd+Enter 快捷保存</span>
+              <span>[记录] 保存后进入文本列表</span>
             </>
           )}
         </div>
