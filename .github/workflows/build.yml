@@ -45,14 +45,32 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app
-        run: npm run build
-
-      - name: Sign artifact (tagged releases only)
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri signer sign
+        run: npm run build
+
+      - name: Create DMG from .app bundle
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p src-tauri/target/release/bundle/dmg
+          DMG_NAME="OpenCut_${GITHUB_REF_NAME#v}_aarch64.dmg"
+          hdiutil create -volname "OpenCut" \
+            -srcfolder src-tauri/target/release/bundle/macos/OpenCut.app \
+            -ov -format UDZO \
+            "src-tauri/target/release/bundle/dmg/$DMG_NAME"
+
+      - name: Sign DMG (tagged releases only)
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'macos-latest'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/tauri-key.pem
+          for f in src-tauri/target/release/bundle/dmg/*.dmg; do
+            npx tauri signer sign -k /tmp/tauri-key.pem -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$f"
+          done
+          rm /tmp/tauri-key.pem
 
       - name: Upload macOS artifact
         if: matrix.os == 'macos-latest'
