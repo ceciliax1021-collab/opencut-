@@ -43,7 +43,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { check as checkUpdate } from '@tauri-apps/plugin-updater';
 
 type ActiveTab = 'image' | 'text' | 'memo';
-type PendingTextCleanup = { label: string } | null;
+type CleanupDialog = {
+  candidates: TextClip[];
+  label: string;
+  selected: Set<string>;
+  sortAsc: boolean;
+} | null;
 
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
@@ -73,7 +78,7 @@ export default function App() {
   const [newTextContent, setNewTextContent] = useState('');
   const [selectedTextIds, setSelectedTextIds] = useState<Set<string>>(new Set());
   const [isTextSelectMode, setIsTextSelectMode] = useState(false);
-  const [pendingTextCleanup, setPendingTextCleanup] = useState<PendingTextCleanup>(null);
+  const [cleanupDialog, setCleanupDialog] = useState<CleanupDialog>(null);
   const [editingText, setEditingText] = useState<TextClip | null>(null);
   const [editingTextContent, setEditingTextContent] = useState('');
   const [textContextMenu, setTextContextMenu] = useState<{ x: number, y: number, text: TextClip } | null>(null);
@@ -268,7 +273,6 @@ export default function App() {
         updated.delete(id);
         return updated;
       });
-      setPendingTextCleanup(null);
       showToast('文本已删除');
     } catch (e) {
       console.error(e);
@@ -300,19 +304,17 @@ export default function App() {
     });
   };
 
-  const startTextCleanupReview = (label: string, candidates: TextClip[]) => {
+  const openCleanupDialog = (label: string, candidates: TextClip[]) => {
     if (candidates.length === 0) {
       showToast('没有需要清理的文本');
       return;
     }
-
-    setActiveTab('text');
-    setSearchQuery('');
-    setIsSearchExpanded(false);
-    setIsTextSelectMode(true);
-    setPendingTextCleanup({ label });
-    setSelectedTextIds(new Set(candidates.map(t => t.id)));
-    showToast(`已预选 ${candidates.length} 条，请确认后清理`);
+    setCleanupDialog({
+      candidates,
+      label,
+      selected: new Set(candidates.map(t => t.id)),
+      sortAsc: false,
+    });
   };
 
   const uploadFiles = async (fileArray: FileList | File[]) => {
@@ -438,21 +440,19 @@ export default function App() {
   const deleteSelectedTexts = async () => {
     if (selectedTextIds.size === 0) return;
     const idsToDelete: string[] = Array.from(selectedTextIds);
-    const actionLabel = pendingTextCleanup?.label || '删除选中';
 
-    if (!confirm(`确认${actionLabel} ${idsToDelete.length} 条文本吗？\n此操作会删除本地记录，无法撤销。`)) {
+    if (!confirm(`确认删除选中的 ${idsToDelete.length} 条文本吗？\n此操作会删除本地记录，无法撤销。`)) {
       return;
     }
 
     setTexts(prev => prev.filter(t => !selectedTextIds.has(t.id)));
     setSelectedTextIds(new Set());
-    setPendingTextCleanup(null);
     setIsTextSelectMode(false);
-    
+
     for (const id of idsToDelete) {
       removeText(id).catch(console.error);
     }
-    showToast(`已${actionLabel} ${idsToDelete.length} 条文本`);
+    showToast(`已删除 ${idsToDelete.length} 条文本`);
   };
 
   const copyToClipboard = async (image: UploadedImage) => {
@@ -905,7 +905,6 @@ export default function App() {
               setActiveTab('image');
               setSearchQuery('');
               setIsSearchExpanded(false);
-              setPendingTextCleanup(null);
             }}
             className={`transition-all duration-200 cursor-pointer ${
               activeTab === 'image' 
@@ -938,7 +937,6 @@ export default function App() {
               setActiveTab('memo');
               setSearchQuery('');
               setIsSearchExpanded(false);
-              setPendingTextCleanup(null);
             }}
             className={`transition-all duration-200 cursor-pointer ${
               activeTab === 'memo'
@@ -970,7 +968,6 @@ export default function App() {
                 id="action-btn-merge-copy"
                 onClick={() => {
                   setIsTextSelectMode(!isTextSelectMode);
-                  setPendingTextCleanup(null);
                   if (isTextSelectMode) {
                     setSelectedTextIds(new Set());
                   }
@@ -1004,7 +1001,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsTextCleanMenuOpen(false);
-                          startTextCleanupReview('智能清理', getSmartTextCleanupCandidates());
+                          openCleanupDialog('智能清理', getSmartTextCleanupCandidates());
                         }}
                         className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
                       >
@@ -1014,7 +1011,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsTextCleanMenuOpen(false);
-                          startTextCleanupReview('短文本清理', getShortTextCleanupCandidates());
+                          openCleanupDialog('短文本清理', getShortTextCleanupCandidates());
                         }}
                         className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
                       >
@@ -1599,7 +1596,7 @@ export default function App() {
             className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#191919]/95 backdrop-blur-xl border border-neutral-800/80 shadow-[0_24px_50px_rgba(0,0,0,0.3)] rounded-2xl p-2 flex items-center gap-1.5 z-40 select-none font-sans text-xs"
           >
             <span className="pl-3.5 pr-2.5 text-xs font-bold text-white tracking-wide font-sans">
-              {pendingTextCleanup ? `待确认${pendingTextCleanup.label}` : '已选中'} {selectedTextIds.size} 条文本
+              已选中 {selectedTextIds.size} 条文本
             </span>
             <div className="w-px h-4 bg-neutral-800 mx-1.5" />
             <button
@@ -1630,14 +1627,13 @@ export default function App() {
               className="px-3.5 py-2 text-xs font-bold text-red-400 hover:text-red-350 hover:bg-red-950/40 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>{pendingTextCleanup ? '确认清理' : '删除选中'}</span>
+              <span>删除选中</span>
             </button>
             <div className="w-px h-4 bg-neutral-800 mx-1.5" />
             <button
               onClick={() => {
                 setIsTextSelectMode(false);
                 setSelectedTextIds(new Set());
-                setPendingTextCleanup(null);
               }}
               className="px-3.5 py-2 text-xs font-bold text-neutral-400 hover:text-white hover:bg-neutral-800/80 rounded-xl transition-all cursor-pointer"
             >
@@ -1802,6 +1798,147 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {}
+      <AnimatePresence>
+        {cleanupDialog && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.93 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.93 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 280 }}
+              className="bg-white border border-neutral-200/80 shadow-2xl rounded-2xl w-full max-w-xl overflow-hidden flex flex-col max-h-[80vh] text-[#1A1A1A] font-sans"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 shrink-0">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-sm font-bold text-neutral-900">{cleanupDialog.label}</h2>
+                  <span className="text-[10px] font-mono text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded-md font-bold">
+                    {cleanupDialog.candidates.length} 条候选
+                  </span>
+                </div>
+                <button
+                  onClick={() => setCleanupDialog(null)}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-800 hover:bg-neutral-100 transition-all cursor-pointer"
+                >
+                  <span className="text-base leading-none">✕</span>
+                </button>
+              </div>
+
+              {}
+              <div className="flex items-center justify-between px-6 py-2.5 border-b border-neutral-100/60 bg-neutral-50/30 shrink-0">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      const allSelected = cleanupDialog.selected.size === cleanupDialog.candidates.length;
+                      const newSelected = new Set(cleanupDialog.selected);
+                      if (allSelected) {
+                        newSelected.clear();
+                      } else {
+                        cleanupDialog.candidates.forEach(t => newSelected.add(t.id));
+                      }
+                      setCleanupDialog({ ...cleanupDialog, selected: newSelected });
+                    }}
+                    className="text-xs font-bold text-neutral-500 hover:text-neutral-900 transition-colors cursor-pointer bg-transparent border-0 px-2 py-1"
+                  >
+                    {cleanupDialog.selected.size === cleanupDialog.candidates.length ? '取消全选' : '全选全部'}
+                  </button>
+                  <span className="text-[10px] font-mono text-neutral-400">
+                    已选 <strong className="text-neutral-700">{cleanupDialog.selected.size}</strong> 条
+                  </span>
+                </div>
+                <button
+                  onClick={() => setCleanupDialog({ ...cleanupDialog, sortAsc: !cleanupDialog.sortAsc })}
+                  className="text-xs font-bold text-neutral-500 hover:text-neutral-900 transition-all cursor-pointer bg-transparent border-0 px-2 py-1 flex items-center gap-1"
+                >
+                  <span className="text-neutral-400 text-[10px]">{cleanupDialog.sortAsc ? '↑ 最早优先' : '↓ 最新优先'}</span>
+                </button>
+              </div>
+
+              {}
+              <div className="flex-1 overflow-y-auto px-0 py-0">
+                <div className="divide-y divide-neutral-100/80">
+                  {(cleanupDialog.sortAsc
+                    ? [...cleanupDialog.candidates].reverse()
+                    : cleanupDialog.candidates
+                  ).map((text) => {
+                    const isSelected = cleanupDialog.selected.has(text.id);
+                    return (
+                      <label
+                        key={text.id}
+                        className={`flex items-center gap-3 px-6 py-3 cursor-pointer transition-colors hover:bg-neutral-50 ${
+                          isSelected ? 'bg-red-50/30' : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {
+                            const newSelected = new Set(cleanupDialog.selected);
+                            if (newSelected.has(text.id)) {
+                              newSelected.delete(text.id);
+                            } else {
+                              newSelected.add(text.id);
+                            }
+                            setCleanupDialog({ ...cleanupDialog, selected: newSelected });
+                          }}
+                          className="w-4 h-4 rounded border-neutral-300 text-[#191919] focus:ring-[#191919]/20 accent-neutral-900 shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-neutral-800 truncate font-medium leading-relaxed">
+                            {text.content}
+                          </p>
+                          <p className="text-[10px] text-neutral-400 font-mono mt-0.5">
+                            {new Date(text.createdAt).toLocaleString()} · {text.content.length} 字符
+                          </p>
+                        </div>
+                        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full font-bold shrink-0 ${
+                          text.content.trim().length <= 5
+                            ? 'bg-amber-50 text-amber-700'
+                            : 'bg-neutral-100 text-neutral-500'
+                        }`}>
+                          {text.content.trim().length <= 5 ? '短文本' : '重复'}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {}
+              <div className="px-6 py-4 border-t border-neutral-100 bg-neutral-50/50 flex items-center justify-between shrink-0">
+                <button
+                  onClick={() => setCleanupDialog(null)}
+                  className="px-4 py-2 text-xs font-bold text-neutral-500 hover:text-neutral-900 bg-white hover:bg-neutral-100 border border-neutral-200 rounded-xl transition-all cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={async () => {
+                    const idsToDelete = Array.from(cleanupDialog.selected);
+                    if (idsToDelete.length === 0) {
+                      showToast('请至少选择一条文本');
+                      return;
+                    }
+                    setTexts(prev => prev.filter(t => !cleanupDialog.selected.has(t.id)));
+                    setCleanupDialog(null);
+                    for (const id of idsToDelete) {
+                      removeText(id).catch(console.error);
+                    }
+                    showToast(`已清理 ${idsToDelete.length} 条文本`);
+                  }}
+                  className="px-5 py-2 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-xl transition-all shadow-sm cursor-pointer active:scale-95 flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  确认删除 ({cleanupDialog.selected.size})
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {}
       <AnimatePresence>
