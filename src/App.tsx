@@ -48,6 +48,7 @@ type CleanupDialog = {
   label: string;
   selected: Set<string>;
   sortAsc: boolean;
+  mode: 'delete' | 'merge';
 } | null;
 
 export default function App() {
@@ -304,7 +305,7 @@ export default function App() {
     });
   };
 
-  const openCleanupDialog = (label: string, candidates: TextClip[]) => {
+  const openCleanupDialog = (label: string, candidates: TextClip[], mode: 'delete' | 'merge') => {
     if (candidates.length === 0) {
       showToast('没有需要清理的文本');
       return;
@@ -312,6 +313,7 @@ export default function App() {
     setCleanupDialog({
       candidates,
       label,
+      mode,
       selected: new Set(candidates.map(t => t.id)),
       sortAsc: false,
     });
@@ -1001,7 +1003,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsTextCleanMenuOpen(false);
-                          openCleanupDialog('智能清理', getSmartTextCleanupCandidates());
+                          openCleanupDialog('智能清理', getSmartTextCleanupCandidates(), 'merge');
                         }}
                         className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
                       >
@@ -1011,7 +1013,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsTextCleanMenuOpen(false);
-                          openCleanupDialog('短文本清理', getShortTextCleanupCandidates());
+                          openCleanupDialog('短文本清理', getShortTextCleanupCandidates(), 'delete');
                         }}
                         className="w-full text-left px-4 py-2.5 hover:bg-neutral-50 transition-colors font-bold text-neutral-750 hover:text-neutral-950"
                       >
@@ -1915,25 +1917,66 @@ export default function App() {
                 >
                   取消
                 </button>
-                <button
-                  onClick={async () => {
-                    const idsToDelete = Array.from(cleanupDialog.selected);
-                    if (idsToDelete.length === 0) {
-                      showToast('请至少选择一条文本');
-                      return;
-                    }
-                    setTexts(prev => prev.filter(t => !cleanupDialog.selected.has(t.id)));
-                    setCleanupDialog(null);
-                    for (const id of idsToDelete) {
-                      removeText(id).catch(console.error);
-                    }
-                    showToast(`已清理 ${idsToDelete.length} 条文本`);
-                  }}
-                  className="px-5 py-2 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-xl transition-all shadow-sm cursor-pointer active:scale-95 flex items-center gap-1.5"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  确认删除 ({cleanupDialog.selected.size})
-                </button>
+                <div className="flex items-center gap-2">
+                  {cleanupDialog.mode === 'merge' && (
+                    <button
+                      onClick={async () => {
+                        const selected = Array.from(cleanupDialog.selected);
+                        if (selected.length === 0) {
+                          showToast('请至少选择一条文本');
+                          return;
+                        }
+                        const selectedTexts = cleanupDialog.candidates.filter(t => cleanupDialog.selected.has(t.id));
+                        const groups = new Map<string, TextClip[]>();
+                        for (const t of selectedTexts) {
+                          const key = t.content.trim().toLowerCase();
+                          if (!groups.has(key)) groups.set(key, []);
+                          groups.get(key)!.push(t);
+                        }
+                        const toDelete: string[] = [];
+                        let mergedCount = 0;
+                        for (const [, items] of groups) {
+                          if (items.length < 2) continue;
+                          items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+                          toDelete.push(...items.slice(1).map(t => t.id));
+                          mergedCount += items.slice(1).length;
+                        }
+                        if (toDelete.length === 0) {
+                          showToast('没有可合并的重复项');
+                          return;
+                        }
+                        setTexts(prev => prev.filter(t => !toDelete.includes(t.id)));
+                        setCleanupDialog(null);
+                        for (const id of toDelete) {
+                          removeText(id).catch(console.error);
+                        }
+                        showToast(`已合并 ${mergedCount} 条重复文本`);
+                      }}
+                      className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-all shadow-sm cursor-pointer active:scale-95 flex items-center gap-1.5"
+                    >
+                      合并选中项 ({cleanupDialog.selected.size})
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      const idsToDelete = Array.from<string>(cleanupDialog.selected);
+                      if (idsToDelete.length === 0) {
+                        showToast('请至少选择一条文本');
+                        return;
+                      }
+                      setTexts(prev => prev.filter(t => !cleanupDialog.selected.has(t.id)));
+                      setCleanupDialog(null);
+                      for (const id of idsToDelete) {
+                        removeText(id).catch(console.error);
+                      }
+                      showToast(`已删除 ${idsToDelete.length} 条文本`);
+                    }}
+                    className="px-5 py-2 text-xs font-bold text-white bg-[#191919] hover:bg-black rounded-xl transition-all shadow-sm cursor-pointer active:scale-95 flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    删除选中项 ({cleanupDialog.selected.size})
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -2081,8 +2124,6 @@ export default function App() {
           {isCheckingUpdate && (
             <span className="text-[#AAAAAA] tracking-normal text-[10px]">检查中...</span>
           )}
-        </div>
-        <div className="flex items-center gap-2">
           {isInstallingUpdate && (
             <span className="text-amber-600 text-[10px] tracking-normal">正在安装更新...</span>
           )}
@@ -2104,33 +2145,49 @@ export default function App() {
               检查更新
             </button>
           )}
-          <div className="flex gap-6 pr-1">
-          {activeTab === 'image' ? (
-            <>
-              <span>[选择] 勾选圆圈多选</span>
-              <span>[复制] 单击卡片图片复制</span>
-              <span>[命名] 双击标题重命名</span>
-              <span>[右键] 更多操作菜单</span>
-              <span>[粘贴] Ctrl+V 快捷导入</span>
-              <span>[框选] 鼠标拖拽批量选中</span>
-            </>
-          ) : activeTab === 'text' ? (
-            <>
-              <span>[选择] 勾选圆圈多选</span>
-              <span>[复制] 单击内容快速复制</span>
-              <span>[粘贴] Ctrl+V 快捷导入文本</span>
-              <span>[删除] Delete 键删除选中</span>
-              <span>[框选] 鼠标拖拽批量选中</span>
-            </>
-          ) : (
-            <>
-              <span>[保存] Cmd+Enter 快捷保存</span>
-              <span>[记录] 保存后进入文本列表</span>
-            </>
-          )}
         </div>
-        </div> {/* end right-side container */}
+        <ScrollingTips activeTab={activeTab} />
       </footer>
+    </div>
+  );
+}
+
+function ScrollingTips({ activeTab }: { activeTab: ActiveTab }) {
+  const tips = useMemo(() => {
+    switch (activeTab) {
+      case 'image':
+        return ["勾选圆圈多选", "单击卡片复制图片", "双击标题重命名", "右键更多操作", "Ctrl+V 快捷导入", "鼠标拖拽批量选中"];
+      case 'text':
+        return ["勾选圆圈多选", "单击内容快速复制", "输入框 Enter 保存", "Ctrl+V 导入文本", "Delete 键删除选中", "鼠标拖拽批量选中"];
+      case 'memo':
+        return ["Cmd+Enter 快捷保存", "保存后即入文本列表"];
+    }
+  }, [activeTab]);
+
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    setIndex(0);
+    const timer = setInterval(() => {
+      setIndex(prev => (prev + 1) % tips.length);
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [tips.length]);
+
+  return (
+    <div className="relative h-4 w-56 overflow-hidden text-right">
+      <AnimatePresence mode="wait">
+        <motion.span
+          key={index}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.25 }}
+          className="block text-[10px] text-[#999999] tracking-normal"
+        >
+          {tips[index]}
+        </motion.span>
+      </AnimatePresence>
     </div>
   );
 }
